@@ -15,7 +15,7 @@ known open questions/bugs.
 pip install -r requirements.txt   # deps: fastapi, uvicorn, Pillow, numpy, python-multipart, python-dotenv
 npm install                        # deps: @anthropic-ai/claude-agent-sdk (Node; slide-copy + image analysis)
 python app.py                      # serves the UI + API at http://127.0.0.1:8000
-.venv/bin/python -m pytest -v      # run the test suite (78 tests, tests/ + pytest.ini)
+.venv/bin/python -m pytest -v      # run the test suite (92 tests, tests/ + pytest.ini)
 ```
 
 `ffmpeg` must be installed and on `PATH` for MP4 generation — it is invoked via `subprocess`, not pip, and
@@ -59,13 +59,23 @@ sequencing).
   completeness with EXIF tie-break/conflict, confidence calibration, and review routing.
 - **`lifecycle_taxonomy.py`** (all tunable constants/weights/thresholds), **`analysis_schema.py`**
   (`SignalReading`, `ImageAnalysis`), **`context_generation.py`** (grounded per-image context +
-  `refine_copy` reusing the Node copy path).
+  `derive_default_copy`/`refine_copy`, which tier per-image copy LLM → derived → blank; the old
+  shared constant fallback was deleted).
 - **`app.py`** — `POST /analyze-sequence/` (analyze + propose order, returns the schema for the
-  review UI; `get_vision_analyzer()` is the test patch point). `POST /generate-post/` gained an
-  optional `sequence_json` that builds `slides_dataset` by **`image_ref` (basename) keyed join, not
-  positional index** — the reorder-safe path; when `sequence_json` is absent the exact legacy
-  positional `metadata_json` path runs unchanged. The UI adds an "Analyze & Sequence" review panel
-  (reorder / relabel / edit context) on top of the untouched legacy manual flow.
+  review UI; `get_vision_analyzer()` is the test patch point). It **always** attaches per-image
+  `copy` via `context_generation.refine_copy(analyses, use_llm=...)` (tiered LLM → derived → blank);
+  the `generate_copy` flag gates only the optional live-LLM tier. `POST /generate-post/` gained an
+  optional `sequence_json` that builds `slides_dataset` by **stable client `uid` keyed join** (each
+  sequence entry carries its `uid`; the browser also posts an aligned `upload_uids` list), **not**
+  basename and not positional index — this is the reorder-safe, duplicate-basename-safe path.
+  `_slides_from_sequence` **fails loudly with HTTP 400** on missing/misaligned `upload_uids`, a
+  duplicate uid, or a sequence entry whose uid has no uploaded file. When `sequence_json` is absent
+  the legacy positional `metadata_json` path runs (now also **400-validated** for length/shape).
+  The UI is a numbered 5-step flow — Add photos → Event details → Analyze & Sequence → Review
+  (reorder / relabel / edit context + copy) → Export — with per-image thumbnail previews, copy that
+  migrates from the upload cards into the review panel (then the cards go read-only), and prerequisite
+  gating (Analyze/Export disabled until a photo exists; the review panel hidden until Analyze runs).
+  There is a single copy path: the old generic `/generate-copy/` button/route was **removed**.
 
 Known: opaque Claude Code subprocess failures under rapid sequential vision calls (surface as the
 bridge's terse "Claude Code process exited with code 1"; root cause unconfirmed). Such images
@@ -78,35 +88,45 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
 
 - **`app.py`** — FastAPI app with three routes:
   - `GET /` returns a single self-contained HTML page (Tailwind via CDN, no build step) with inline
-    vanilla JS for the drag-and-drop UI. Per uploaded file, the UI collects three free-text fields
-    (`kicker`, `headline`, `sub`) that map 1:1 to slide overlay text. An "Auto-generate copy" button
-    calls `/generate-copy/` and fills those fields in-place.
-  - `POST /generate-copy/` accepts `context` (free-text form field) and `count` (int), calls
-    `text_generation.generate_slide_copy`, and returns `{"slides": [...]}` — a list of
-    `{kicker, headline, sub}` dicts, index-aligned to the upload order, meant to prefill (not replace)
-    the per-photo fields before the user edits/submits.
-  - `POST /generate-post/` accepts `output_name` (form field), `metadata_json` (JSON-encoded array of
-    `{kicker, headline, sub}`, index-aligned with the uploaded files), and `files` (multipart list).
-    It writes uploads to `temp_uploads/`, calls `compositor.render_post_package`, deletes the temp
-    uploads, and returns the resulting `mp4`/`pdf` paths. Uploaded file order and `metadata_json` order
-    **must stay index-aligned** — there's no filename-based matching.
+    vanilla JS for the drag-and-drop UI, laid out as a numbered 5-step flow (Add photos → Event
+    details → Analyze & Sequence → Review → Export). Each uploaded file gets a stable client `uid`, a
+    thumbnail preview, and three free-text fields (`kicker`, `headline`, `sub`) that map 1:1 to slide
+    overlay text. Analyze/Export are disabled until ≥1 photo exists; the Review panel is hidden until
+    Analyze runs. There is a single copy path — the old generic `/generate-copy/` route was removed.
+  - `POST /analyze-sequence/` accepts `files`, `event_context` (free-text), and `generate_copy`
+    (bool). It classifies each photo's lifecycle state, orders them deterministically, grounds a
+    per-image Event Context, and **always** attaches per-image `copy` (`refine_copy`, tiered
+    LLM → derived → blank; `generate_copy` gates only the LLM tier). Returns the review schema —
+    `image_ref` for display plus `upload_index` to bind each row back to the browser's uid.
+    `get_vision_analyzer()` is the test patch point.
+  - `POST /generate-post/` accepts `output_name` (required, non-blank), `files` (multipart), and
+    either `sequence_json` + an aligned `upload_uids` list (reorder-safe, joined by **uid**, 400 on
+    misalignment/duplicate/unknown uid) or the legacy `metadata_json` (index-aligned; length/shape
+    400-validated). It writes uploads under per-upload subdirs in `temp_uploads/` (so duplicate
+    basenames don't collide), calls `compositor.render_post_package`, deletes the temp uploads, and
+    returns the resulting `mp4`/`pdf` paths under `outputs/<base>/`.
 
 - **`compositor.py`** — pure image/video rendering, no web concerns:
   - `render_post_package(slides_dataset, output_base_name)` is the single entry point. `slides_dataset`
     is a list of `{path, kicker, headline, sub}` dicts.
   - Fixed output canvas: `OUTPUT_WIDTH=1080 x OUTPUT_HEIGHT=1350` (portrait, Instagram-story-shaped).
-  - Per-slide pipeline: center-crop to target aspect ratio → resize → a mild luminance-gated exposure
-    pass (`ImageStat` mean < 60 → +10% brightness lift; otherwise a light `UnsharpMask`) → paste a
-    bottom gradient scrim → composite the bundled logo (top-left, `LOGO_HEIGHT=90`) → draw brand text
-    (kicker/headline are rendered to a transparent layer and affine-sheared by a fixed -0.16 shear
-    factor before compositing, to get the italicized brand look).
+  - Per-slide pipeline: `_grade` (an unconditional colour grade from `DEFAULT_GRADE` —
+    exposure/contrast/saturation/sharpen — plus optional per-slide `grade`/`crop` overrides) →
+    center-crop to target aspect ratio → resize → top + bottom gradient scrims + vignette → composite
+    the bundled logo (top-left, `LOGO_HEIGHT=96`) → top-right LOCATION/TAGLINE stamp → right-edge
+    FADER tick strip → draw brand text (the headline is rendered to a transparent layer and
+    affine-sheared by a fixed `SHEAR=+0.16` for the italic brand look; the kicker is letter-tracked,
+    not sheared) → bottom-right contact URL.
   - The last slide's image is reused (blurred + darkened) to auto-generate an outro/end card with a
     fixed tagline and contact info — there's no way to opt out of the end card per-run.
-  - Slides are written as numbered temp JPEGs (`__ui_slide_{idx}.jpg`, `__ui_slide_end.jpg`) in the
-    project root, combined into the PDF via `Pillow`'s multi-page save, and combined into the MP4 via
-    a chained `ffmpeg -filter_complex xfade` graph (crossfades, not hard cuts) shelled out through
-    `subprocess`. All temp slide files are deleted at the end of the function — a crash mid-render
-    will leave orphaned `__ui_slide_*.jpg` files in the project root.
+  - Slides are written as numbered JPEGs (`slide_{idx:03d}.jpg`, `slide_end.jpg`) inside an
+    auto-deleted `tempfile.TemporaryDirectory(prefix="cvav_render_")`, combined into the PDF via
+    `Pillow`'s multi-page save and into the MP4 via a chained `ffmpeg -filter_complex xfade` graph
+    (crossfades, not hard cuts) shelled out through `subprocess`. Because the frames live in a temp
+    dir, a crash mid-render leaves **no** orphaned artifacts. Final deliverables land under
+    `outputs/<base>/<base>.{pdf,mp4}` (via `build_output_paths`, which claims the first free
+    `outputs/<base>[-N]/` so repeat runs never clobber). A corrupt-but-present source image is
+    skipped, not fatal.
 
 - **`text_generation.py`** — optional LLM-assisted slide copy, no web/rendering concerns:
   - `generate_slide_copy(context, slide_count)` is the single entry point — a free-text event
@@ -116,7 +136,8 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
     non-Node environment, and malformed/mismatched output, degrading to a `[MOCK]`-prefixed
     placeholder in every case instead of raising — callers never need to handle an error path.
 
-- **`generate_slide_copy.mjs`** — Node/ESM script, the only place the Claude Agent SDK is used:
+- **`generate_slide_copy.mjs`** — Node/ESM script; one of two Claude Agent SDK bridges (the other is
+  `analyze_image.mjs`, used for per-image vision analysis). Used only by `refine_copy`'s LLM tier:
   - Ported from an external reference pair (`claude_token_template.md` outline +
     `quoting-engine.ts` real-world example) — same auth-gate, hermetic single-turn `query()` call,
     and tolerant JSON parsing pattern.
@@ -137,12 +158,15 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
   Changing the visual brand means editing these constants and the draw calls directly.
 - The inline `<script>` in `app.py` is plain browser JS, not a bundled frontend — do not introduce
   `async def` (Python syntax) there; it must be `async function`.
-- Filenames for intermediate render artifacts are non-namespaced (`__ui_slide_*.jpg`), so this pipeline
-  is not safe for concurrent/parallel compile requests.
+- Intermediate render frames now live in a per-run `tempfile.TemporaryDirectory` (unique prefix), so
+  they no longer collide across runs. The remaining concurrency caveat is `outputs/<base>/`: two runs
+  sharing an `output_name` would target the same folder, but `build_output_paths` claims the first
+  free `outputs/<base>[-N]/` to avoid clobber. Still a single-operator tool, not built for truly
+  parallel compile requests.
 - Never hardcode `CLAUDE_CODE_OAUTH_TOKEN` (or any credential) into source — it belongs in a local
   `.env`, gitignored, loaded via `python-dotenv` (Python side) / inherited `process.env` (Node side).
   `generate_slide_copy.mjs` explicitly rejects `ANTHROPIC_API_KEY` if set, to keep usage on
   subscription billing rather than silently falling back to metered API billing — this check must
   not be removed or weakened.
-- No git repo exists in this directory yet, so `node_modules/`, `package-lock.json`, and any future
-  `.env` are not currently gitignored anywhere — add a `.gitignore` before running `git init`.
+- The repo is under git with a `.gitignore` that already covers `.env`, `node_modules/`,
+  `package-lock.json`, `outputs/`, and `temp_uploads/`.

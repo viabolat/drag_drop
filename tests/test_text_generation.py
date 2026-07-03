@@ -70,17 +70,3 @@ def test_mismatched_slide_count_falls_back_to_mock(mocker):
     slides = text_generation.generate_slide_copy("Corporate gala", 3)
     assert len(slides) == 3
     assert all(s["kicker"] == "[MOCK]" for s in slides)
-
-
-@pytest.mark.integration
-def test_generate_copy_endpoint_returns_slides(client, mocker):
-    mocker.patch("app.generate_slide_copy", return_value=[{"kicker": "K", "headline": "H", "sub": "S"}])
-    response = client.post("/generate-copy/", data={"context": "test event", "count": 1})
-    assert response.status_code == 200
-    assert response.json()["slides"] == [{"kicker": "K", "headline": "H", "sub": "S"}]
-
-
-@pytest.mark.integration
-def test_generate_copy_endpoint_rejects_zero_count(client):
-    response = client.post("/generate-copy/", data={"context": "test event", "count": 0})
-    assert response.status_code == 400

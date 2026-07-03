@@ -58,15 +58,22 @@ def build_output_paths(output_base_name):
     base = os.path.basename(str(output_base_name)).strip()
     if not base or base in (".", ".."):
         base = "citiview_social_post"
-    out_dir = os.path.join(OUTPUT_ROOT, base)
-    # reason: create each level with os.mkdir (not os.makedirs) so directory creation never
-    # depends on os.path.exists — which callers/tests may monkeypatch, breaking makedirs.
-    for level in (OUTPUT_ROOT, out_dir):
+    try:
+        os.mkdir(OUTPUT_ROOT)
+    except FileExistsError:
+        pass
+    # reason: never overwrite a previous export that used the same base name — claim the first
+    # free outputs/<base>[-N]/ so repeat/concurrent runs can't clobber each other's deliverables.
+    # Relies on mkdir's atomic FileExistsError (not os.path.exists, which callers/tests monkeypatch).
+    name, n = base, 2
+    while True:
+        out_dir = os.path.join(OUTPUT_ROOT, name)
         try:
-            os.mkdir(level)
+            os.mkdir(out_dir)
+            break
         except FileExistsError:
-            pass
-    return out_dir, os.path.join(out_dir, base + ".pdf"), os.path.join(out_dir, base + ".mp4")
+            name, n = f"{base}-{n}", n + 1
+    return out_dir, os.path.join(out_dir, name + ".pdf"), os.path.join(out_dir, name + ".mp4")
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +499,13 @@ def render_post_package(slides_dataset, output_base_name="citiview_social_post",
             path = slide.get("path")
             if not path or not os.path.exists(path):
                 continue
-            img = Image.open(path).convert("RGB")
+            try:
+                img = Image.open(path).convert("RGB")
+            except Exception as e:
+                # reason: a corrupt-but-present upload must not 500 the whole render — skip it
+                # (parity with the analyze path, which already tolerates unreadable images).
+                print(f"[compositor] skipping unreadable image {path}: {e}")
+                continue
             frame, last_bg = _compose_slide(img, slide, idx, count, logo, stamp, enable_fader, fonts)
             fp = os.path.join(tmpdir, f"slide_{idx:03d}.jpg")
             frame.save(fp, "JPEG", quality=95)

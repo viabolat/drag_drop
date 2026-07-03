@@ -51,17 +51,20 @@ def test_success_path_produces_pdf_on_disk(posted_response):
 
 
 @pytest.mark.integration
-def test_invalid_image_upload_raises_unidentifiedimageerror(client, mock_fonts_present):
-    # reason: pins a known gap (compositor.py has no image-validation try/except around
-    # Image.open) rather than fixing it — out of scope for this test-suite task
+def test_invalid_image_upload_is_skipped_not_crash(client, mock_fonts_present):
+    # reason: R1 fixed — a corrupt-but-present image is skipped in the compositor and never raises
+    # UnidentifiedImageError. With no valid frames left, the endpoint returns a controlled 500
+    # "Render generation fault", not an uncaught crash/traceback.
     files = [("files", ("slide_a.jpg", io.BytesIO(b"not a real image"), "image/jpeg"))]
     metadata = [{"kicker": "ARENA", "headline": "LIGHTS UP", "sub": "Live setup."}]
-    with pytest.raises(UnidentifiedImageError):
-        client.post(
-            "/generate-post/",
-            data={"output_name": "test_output_invalid_image", "metadata_json": json.dumps(metadata)},
-            files=files,
-        )
+    resp = client.post(
+        "/generate-post/",
+        data={"output_name": "test_output_invalid_image", "metadata_json": json.dumps(metadata)},
+        files=files,
+    )
+    assert resp.status_code == 500
+    assert "Render generation fault" in resp.json()["detail"]
+    assert os.listdir(UPLOAD_DIR) == []
 
 
 @pytest.mark.integration

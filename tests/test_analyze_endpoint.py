@@ -276,6 +276,63 @@ def test_full_flow_reorder_preserves_text_image_binding(
     assert os.listdir(UPLOAD_DIR) == []
 
 
+def test_generate_post_blank_output_name_rejected(client, make_jpeg_bytes):
+    # R3: a blank base name would collapse every run onto one output folder -> reject loudly.
+    sequence = [{"uid": "u0", "image_ref": "a.jpg", "sequence_index": 0,
+                 "kicker": "K", "headline": "H", "sub": "S"}]
+    resp = client.post(
+        "/generate-post/",
+        data={"output_name": "   ", "sequence_json": json.dumps(sequence),
+              "upload_uids": json.dumps(["u0"])},
+        files=_files(make_jpeg_bytes, "a.jpg"),
+    )
+    assert resp.status_code == 400
+    assert os.listdir(UPLOAD_DIR) == []
+
+
+def test_generate_post_metadata_length_mismatch_400(client, make_jpeg_bytes):
+    # R2: legacy metadata path must 400 (not 500) when metadata length/shape doesn't match files.
+    metadata = [{"kicker": "K", "headline": "H", "sub": "S"}]  # 1 entry for 2 files
+    resp = client.post(
+        "/generate-post/",
+        data={"output_name": "test_output_r2", "metadata_json": json.dumps(metadata)},
+        files=_files(make_jpeg_bytes, "a.jpg", "b.jpg"),
+    )
+    assert resp.status_code == 400
+    assert os.listdir(UPLOAD_DIR) == []
+
+
+def test_generate_post_render_skips_corrupt_image(
+        client, mock_ffmpeg_success, mock_fonts_present, make_jpeg_bytes):
+    # R1: a corrupt-but-present image must be skipped, not 500 the whole render.
+    import io
+    files = [("files", ("good.jpg", make_jpeg_bytes(), "image/jpeg")),
+             ("files", ("bad.jpg", io.BytesIO(b"this is not an image"), "image/jpeg"))]
+    sequence = [
+        {"uid": "u0", "image_ref": "good.jpg", "sequence_index": 0,
+         "kicker": "K0", "headline": "H0", "sub": "S0"},
+        {"uid": "u1", "image_ref": "bad.jpg", "sequence_index": 1,
+         "kicker": "K1", "headline": "H1", "sub": "S1"},
+    ]
+    resp = client.post(
+        "/generate-post/",
+        data={"output_name": "test_output_corrupt", "sequence_json": json.dumps(sequence),
+              "upload_uids": json.dumps(["u0", "u1"])},
+        files=files,
+    )
+    assert resp.status_code == 200          # bad slide skipped; good slide still renders
+    assert os.listdir(UPLOAD_DIR) == []
+
+
+def test_build_output_paths_suffixes_on_collision():
+    # R3: a second export with the same base name must not clobber the first.
+    from compositor import build_output_paths
+    d1, pdf1, _ = build_output_paths("test_output_collide")
+    d2, pdf2, _ = build_output_paths("test_output_collide")
+    assert d1 != d2 and pdf1 != pdf2
+    assert os.path.basename(d2).startswith("test_output_collide-")
+
+
 def test_generate_post_without_metadata_or_sequence_returns_400(client, make_jpeg_bytes):
     resp = client.post("/generate-post/", data={"output_name": "test_output_x"},
                        files=_files(make_jpeg_bytes, "a.jpg"))

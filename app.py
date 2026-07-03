@@ -6,7 +6,6 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 import shutil
 from compositor import render_post_package
-from text_generation import generate_slide_copy
 from image_analysis import analyze_and_sequence, compute_scale_frac
 from context_generation import refine_copy
 from vision_provider import ClaudeVisionAnalyzer
@@ -82,50 +81,60 @@ async def serve_interface():
             </header>
 
             <form id="uploadForm" enctype="multipart/form-data" class="space-y-6">
+                <!-- Step 1 — Add photos (nothing depends on files until they exist, so this comes first) -->
                 <div class="bg-zinc-900 border border-zinc-800 p-6 rounded-lg space-y-4">
-                    <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">1. Project Parameters</h2>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-xs text-zinc-400 mb-1">Output File Base Name</label>
-                            <input type="text" name="output_name" value="" class="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-red-500">
-                        </div>
-                    </div>
-                    <div>
-                        <label class="block text-xs text-zinc-400 mb-1">Event Context (for AI-generated slide copy, optional)</label>
-                        <div class="flex gap-2">
-                            <input type="text" id="copyContext" placeholder="e.g. Corporate gala, downtown Austin, LED wall + stage lighting" class="flex-1 bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-red-500">
-                            <button type="button" onclick="autoGenerateCopy()" class="bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-white px-4 rounded-lg transition tracking-wide whitespace-nowrap">
-                                AUTO-GENERATE COPY
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="bg-zinc-900 border border-zinc-800 p-6 rounded-lg space-y-4">
-                    <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">2. Media Cluster Drops</h2>
+                    <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">1. Add Photos</h2>
+                    <p class="text-xs text-zinc-500">Drop your event photos here. A preview appears for each — you'll be able to reorder and caption them later.</p>
                     <div id="dropzone" class="border-2 border-dashed border-zinc-800 hover:border-zinc-700 transition rounded-lg p-8 text-center cursor-pointer">
-                        <p class="text-sm text-zinc-400">Drag & drop source photos here or click to open browser window</p>
+                        <p class="text-sm text-zinc-400">Drag &amp; drop source photos here or click to browse</p>
                         <input type="file" id="fileInput" name="files" multiple class="hidden" accept="image/*">
                     </div>
                     <div id="filePreviewQueue" class="space-y-3"></div>
                 </div>
 
+                <!-- Step 2 — Event details (inputs that Analyze/Export consume; no file-dependent action here) -->
+                <div class="bg-zinc-900 border border-zinc-800 p-6 rounded-lg space-y-4">
+                    <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">2. Event Details</h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs text-zinc-400 mb-1">Output File Base Name <span class="text-red-500">*</span></label>
+                            <input type="text" name="output_name" value="citiview_post" required class="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-red-500">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-zinc-400 mb-1">Event Context (optional)</label>
+                        <input type="text" id="copyContext" placeholder="e.g. Corporate gala, downtown Austin, LED wall + stage lighting" class="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-red-500">
+                        <p class="text-xs text-zinc-500 mt-1">A short description of the event. Used in Step 3 to ground the analysis and the slide copy, so the words stay tied to what each photo actually shows.</p>
+                    </div>
+                </div>
+
+                <!-- Step 3 — Analyze & sequence (requires >=1 photo; grounded copy is part of this step) -->
                 <div class="bg-zinc-900 border border-zinc-800 p-6 rounded-lg space-y-4">
                     <div class="flex items-center justify-between">
-                        <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">3. Lifecycle Analysis &amp; Sequencing</h2>
-                        <label class="text-xs text-zinc-400 flex items-center gap-2"><input type="checkbox" id="genCopy" class="accent-red-600"> auto-generate grounded copy</label>
+                        <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">3. Analyze &amp; Sequence</h2>
+                        <label class="text-xs text-zinc-400 flex items-center gap-2"><input type="checkbox" id="genCopy" class="accent-red-600"> also draft slide copy from each photo</label>
                     </div>
-                    <p class="text-xs text-zinc-500">Detects each photo's event-lifecycle state, orders them, and grounds the Event Context per image. Review, reorder, and relabel below before exporting.</p>
-                    <button type="button" onclick="analyzeSequence()" class="w-full bg-zinc-800 hover:bg-zinc-700 font-medium text-white py-2 rounded-lg transition tracking-wide text-xs">
+                    <p class="text-xs text-zinc-500">Looks at each photo, works out its event-lifecycle stage (empty room → setup → live → teardown), orders them, and writes a photo-matched Event Context. Tick the box to also draft slide copy grounded in each photo — you can edit everything in Step 4.</p>
+                    <button type="button" id="analyzeBtn" onclick="analyzeSequence()" class="w-full bg-zinc-800 hover:bg-zinc-700 font-medium text-white py-2 rounded-lg transition tracking-wide text-xs disabled:opacity-40 disabled:cursor-not-allowed" disabled>
                         ANALYZE &amp; SEQUENCE
                     </button>
-                    <div id="analysisStatus" class="text-xs text-zinc-500"></div>
+                    <div id="analysisStatus" class="text-xs text-zinc-500">Add at least one photo in Step 1 to enable analysis.</div>
+                </div>
+
+                <!-- Step 4 — Review, edit & reorder (hidden until Analyze produces a sequence) -->
+                <div id="reviewSection" class="bg-zinc-900 border border-zinc-800 p-6 rounded-lg space-y-4 hidden">
+                    <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">4. Review, Edit &amp; Reorder</h2>
+                    <p class="text-xs text-zinc-500">Reorder with the arrows, relabel the lifecycle state, and edit the Event Context or copy for any photo. Your edits always win over the auto-draft.</p>
                     <div id="analysisReview" class="space-y-3"></div>
                 </div>
 
-                <button type="button" onclick="executeCompilation()" class="w-full bg-red-600 hover:bg-red-700 font-medium text-white py-3 rounded-lg transition tracking-wide text-sm">
-                    COMPILE RUN EXPORT
-                </button>
+                <!-- Step 5 — Export -->
+                <div class="space-y-2">
+                    <button type="button" id="compileBtn" onclick="executeCompilation()" class="w-full bg-red-600 hover:bg-red-700 font-medium text-white py-3 rounded-lg transition tracking-wide text-sm disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+                        5. COMPILE &amp; EXPORT
+                    </button>
+                    <p id="compileHint" class="text-xs text-zinc-500 text-center">Add photos in Step 1 to enable export.</p>
+                </div>
             </form>
         </div>
 
@@ -177,24 +186,26 @@ async def serve_interface():
                     // if a sequence was already analyzed, new cards are locked too (Review owns copy)
                     if (analysis) setUploadCopyReadonly(true);
                 }
+                refreshGating();  // enable Analyze/Export now that at least one photo exists
             }
 
-            async function autoGenerateCopy() {
-                if (fileArray.length === 0) { alert("Please drop files first."); return; }
-
-                const formData = new FormData();
-                formData.append("context", document.getElementById("copyContext").value);
-                formData.append("count", fileArray.length);
-
-                const response = await fetch('/generate-copy/', { method: 'POST', body: formData });
-                const result = await response.json();
-                result.slides.forEach((slide, i) => {
-                    if (!fileArray[i]) return;
-                    const uid = fileArray[i].uid;
-                    document.getElementById(`kicker_${uid}`).value = slide.kicker;
-                    document.getElementById(`headline_${uid}`).value = slide.headline;
-                    document.getElementById(`sub_${uid}`).value = slide.sub;
-                });
+            function refreshGating() {
+                // Disable actions whose prerequisites aren't met yet (with an inline hint) instead
+                // of letting a click fail with an alert. Analyze + Export both need >=1 photo.
+                const has = fileArray.length > 0;
+                const ab = document.getElementById("analyzeBtn");
+                const cb = document.getElementById("compileBtn");
+                if (ab) ab.disabled = !has;
+                if (cb) cb.disabled = !has;
+                const st = document.getElementById("analysisStatus");
+                if (st && !analysis) st.textContent = has
+                    ? "Ready to analyze " + fileArray.length + " photo(s)."
+                    : "Add at least one photo in Step 1 to enable analysis.";
+                const hint = document.getElementById("compileHint");
+                if (hint) hint.textContent = !has
+                    ? "Add photos in Step 1 to enable export."
+                    : (analysis ? "Exports your reviewed sequence."
+                                : "Ready to export. Run Analyze (Step 3) first for grounded copy & ordering.");
             }
 
             // Mirrors lifecycle_taxonomy.STATE_LABELS + ambiguous_mixed (frontend copy of the
@@ -226,7 +237,7 @@ async def serve_interface():
             }
 
             async function analyzeSequence() {
-                if (fileArray.length === 0) { alert("Please drop files first."); return; }
+                if (fileArray.length === 0) { alert("Add at least one photo in Step 1 first."); return; }
                 const status = document.getElementById("analysisStatus");
                 status.textContent = "Analyzing " + fileArray.length + " image(s)…";
                 const formData = new FormData();
@@ -257,9 +268,9 @@ async def serve_interface():
                             sub: (a.copy && a.copy.sub) || ""
                         };
                     });
-                    // Single source of truth: carry any copy the operator already entered in the
-                    // upload cards (typed, or filled by AUTO-GENERATE COPY) into the matching review
-                    // item by uid, then lock the upload cards so Review is the only copy surface.
+                    // Single source of truth: carry any copy the operator already typed in the
+                    // upload cards into the matching review item by uid, then lock the upload cards
+                    // so the Review panel becomes the only copy surface.
                     let migrated = 0;
                     analysis.forEach(a => {
                         if (!a.uid) return;
@@ -275,7 +286,9 @@ async def serve_interface():
                     status.textContent = "Proposed sequence ready — " + analysis.length + " image(s), "
                         + flagged + " flagged for review."
                         + (migrated ? "  Existing copy for " + migrated + " image(s) carried into Review below." : "");
+                    document.getElementById("reviewSection").classList.remove("hidden");  // reveal Step 4
                     renderReview();
+                    refreshGating();
                 } catch (e) {
                     status.textContent = "Analysis failed: " + e;
                 }
@@ -332,7 +345,7 @@ async def serve_interface():
             function updateField(i, field, value) { analysis[i][field] = value; }
 
             async function executeCompilation() {  // reason: was invalid Python-style syntax, broke compile button in browser
-                if (fileArray.length === 0) { alert("Please drop files first."); return; }
+                if (fileArray.length === 0) { alert("Add at least one photo in Step 1 first."); return; }
 
                 const formData = new FormData();
                 formData.append("output_name", document.getElementsByName("output_name")[0].value);
@@ -380,16 +393,6 @@ async def serve_interface():
     </body>
     </html>
     """
-
-@app.post("/generate-copy/")
-async def generate_copy(
-    context: str = Form(""),
-    count: int = Form(...)
-):
-    if count < 1:
-        raise HTTPException(status_code=400, detail="count must be at least 1.")
-    slides = generate_slide_copy(context, count)
-    return {"slides": slides}
 
 @app.post("/analyze-sequence/")
 async def analyze_sequence(
@@ -440,6 +443,16 @@ def _slides_from_metadata(metadata_json, files, written_paths):
         metadata = json.loads(metadata_json)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid data shape arrays.")
+    # Validate shape loudly (parity with the sequence path) instead of 500-ing on an
+    # IndexError/KeyError deep in the loop when metadata is short or missing fields.
+    if not isinstance(metadata, list) or len(metadata) != len(files):
+        got = len(metadata) if isinstance(metadata, list) else "non-list"
+        raise HTTPException(status_code=400,
+                            detail=f"metadata_json ({got}) does not align with files ({len(files)}).")
+    for i, entry in enumerate(metadata):
+        if not isinstance(entry, dict) or not all(k in entry for k in ("kicker", "headline", "sub")):
+            raise HTTPException(status_code=400,
+                                detail=f"metadata_json entry {i} must have kicker, headline, sub.")
     slides_dataset = []
     for idx, file in enumerate(files):
         file_path = sanitize_upload_filename(file.filename, prefix=str(idx))
@@ -523,6 +536,9 @@ async def generate_post(
     upload_uids: str = Form(None),
     files: list[UploadFile] = File(...)
 ):
+    if not output_name or not output_name.strip():
+        # reason: a blank base name collapses every run onto one output folder (clobber); require it.
+        raise HTTPException(status_code=400, detail="output_name is required.")
     written_paths = []  # reason: tracked separately so a partial write still gets cleaned up
     try:
         if sequence_json is not None:

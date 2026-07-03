@@ -17,17 +17,19 @@ def mismatched_payload(make_jpeg_bytes):
 
 
 @pytest.mark.integration
-def test_metadata_index_mismatch_raises_indexerror(client, mismatched_payload):
+def test_metadata_index_mismatch_returns_400(client, mismatched_payload):
+    # reason: R2 fixed — a metadata/files length mismatch now fails loudly with a 400 (parity with
+    # the sequence path), instead of 500-ing on an IndexError deep in the build loop.
     data, files = mismatched_payload
-    with pytest.raises(IndexError):
-        client.post("/generate-post/", data=data, files=files)
+    resp = client.post("/generate-post/", data=data, files=files)
+    assert resp.status_code == 400
 
 
 @pytest.mark.integration
 def test_metadata_index_mismatch_cleans_up_uploads(client, mismatched_payload):
     data, files = mismatched_payload
-    with pytest.raises(IndexError):
-        client.post("/generate-post/", data=data, files=files)
+    resp = client.post("/generate-post/", data=data, files=files)
+    assert resp.status_code == 400
     assert os.listdir(UPLOAD_DIR) == []
 
 
