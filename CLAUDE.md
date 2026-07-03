@@ -12,10 +12,10 @@ known open questions/bugs.
 ## Commands
 
 ```bash
-pip install -r requirements.txt   # deps: fastapi, uvicorn, Pillow, python-multipart, python-dotenv
-npm install                        # deps: @anthropic-ai/claude-agent-sdk (Node, for slide-copy generation)
+pip install -r requirements.txt   # deps: fastapi, uvicorn, Pillow, numpy, python-multipart, python-dotenv
+npm install                        # deps: @anthropic-ai/claude-agent-sdk (Node; slide-copy + image analysis)
 python app.py                      # serves the UI + API at http://127.0.0.1:8000
-.venv/bin/python -m pytest -v      # run the test suite (29 tests, tests/ + pytest.ini)
+.venv/bin/python -m pytest -v      # run the test suite (78 tests, tests/ + pytest.ini)
 ```
 
 `ffmpeg` must be installed and on `PATH` for MP4 generation — it is invoked via `subprocess`, not pip, and
@@ -27,9 +27,50 @@ bundled directly in the repo root — there is no runtime network dependency for
 
 An optional `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Code subscription token, generated via
 `claude setup-token`, loaded via `.env`/`python-dotenv`) enables AI-generated slide copy through
-`text_generation.py` → `generate_slide_copy.mjs`; without it, that feature degrades to a clearly
-`[MOCK]`-prefixed placeholder rather than failing. `node` must be on `PATH` for this feature —
-if missing, the same mock fallback applies.
+`text_generation.py` → `generate_slide_copy.mjs` **and** per-image vision analysis through
+`vision_provider.py` → `analyze_image.mjs`; without it, both degrade to a clearly `[MOCK]`-prefixed
+placeholder / all-zero-confidence signal vector rather than failing. `node` must be on `PATH` for
+these features — if missing, the same mock fallback applies. Both `.mjs` bridges **reject
+`ANTHROPIC_API_KEY`** (exit 2) to keep usage on subscription billing, never metered API billing.
+
+## Image lifecycle analysis & sequencing layer
+
+Layered on top of the render pipeline (no compositor change — it already honors caller order +
+per-slide `scale_frac`). Decides what each photo represents in an event's lifecycle, orders the
+photos by a deterministic multi-signal engine, and assigns the **correct** grounded per-image
+Event Context. Three invariants: **filenames are never a sequencing signal**; **EXIF metadata is
+strictly secondary** (tie-break / conflict-flag only, `DateTimeOriginal` only, never mtime); **the
+LLM never orders** (vision emits per-image signals with no order field; deterministic Python owns
+sequencing).
+
+- **`analyze_image.mjs`** — Node/ESM vision bridge; the ONLY multimodal use of the Agent SDK. Sends
+  one base64 image + instruction as a streamed `SDKUserMessage` (`query({prompt: AsyncIterable})`,
+  `model:'haiku'`, `maxTurns:1`, `allowedTools:[]`). Prints a signals-only JSON object (no order
+  field). Same auth-gate / tolerant-parse / `[MOCK]`-fallback pattern as `generate_slide_copy.mjs`.
+- **`vision_provider.py`** — the pluggable `VisionAnalyzer` seam. `ClaudeVisionAnalyzer` downscales
+  in Python (Pillow, bounded 1536px JPEG — node stays image-library-free) then shells to the bridge
+  with one fast-fail retry; `DictVisionAnalyzer` injects canned signals in tests; `safe_analyze`
+  enforces never-raise and reports `vision_unavailable`. Tests mock this seam so node/Claude never
+  runs in the suite.
+- **`image_signals.py`** — objective CV (numpy Laplacian-variance / edge-density / colorfulness /
+  brightness, Pillow fallback), EXIF `DateTimeOriginal`, and 64-bit aHash for near-dup detection.
+- **`image_analysis.py`** — the deterministic engine: gated macro-phase classification (hard gates
+  for live/teardown, template affinity along the venue→final continuum), intra-bucket ordering by
+  completeness with EXIF tie-break/conflict, confidence calibration, and review routing.
+- **`lifecycle_taxonomy.py`** (all tunable constants/weights/thresholds), **`analysis_schema.py`**
+  (`SignalReading`, `ImageAnalysis`), **`context_generation.py`** (grounded per-image context +
+  `refine_copy` reusing the Node copy path).
+- **`app.py`** — `POST /analyze-sequence/` (analyze + propose order, returns the schema for the
+  review UI; `get_vision_analyzer()` is the test patch point). `POST /generate-post/` gained an
+  optional `sequence_json` that builds `slides_dataset` by **`image_ref` (basename) keyed join, not
+  positional index** — the reorder-safe path; when `sequence_json` is absent the exact legacy
+  positional `metadata_json` path runs unchanged. The UI adds an "Analyze & Sequence" review panel
+  (reorder / relabel / edit context) on top of the untouched legacy manual flow.
+
+Known: opaque Claude Code subprocess failures under rapid sequential vision calls (surface as the
+bridge's terse "Claude Code process exited with code 1"; root cause unconfirmed). Such images
+degrade to `ambiguous_mixed` + `vision_unavailable` + review after a bounded retry (exponential
+backoff with jitter, sequential — never parallel), never a crash.
 
 ## Architecture
 

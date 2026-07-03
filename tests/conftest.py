@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app import app, UPLOAD_DIR
 
@@ -65,6 +65,55 @@ def posted_response(client, mock_ffmpeg_success, mock_fonts_present, make_jpeg_b
         data={"output_name": "test_output_posted", "metadata_json": json.dumps(metadata)},
         files=files,
     )
+
+
+@pytest.fixture
+def make_signals():
+    """Build a raw vision-semantic dict (the analyze_image.mjs output shape) for injecting
+    deterministic per-image signals into the lifecycle engine (via DictVisionAnalyzer)."""
+    def _make(vr=0.5, av=0.5, dec=0.5, pol=0.5, live=0.0, tear=0.0,
+              activity="none", conf=0.9, alt="an event image", labels=None):
+        return {
+            "venue_readiness": {"value": vr, "confidence": conf},
+            "av_staging_completeness": {"value": av, "confidence": conf},
+            "decor_completeness": {"value": dec, "confidence": conf},
+            "polish_vs_clutter": {"value": pol, "confidence": conf},
+            "live_event_cue": {"value": live, "confidence": conf},
+            "teardown_cue": {"value": tear, "confidence": conf},
+            "human_activity_type": {"value": activity, "confidence": conf},
+            "alt_description": alt,
+            "raw_labels": labels or ["a", "b"],
+        }
+    return _make
+
+
+@pytest.fixture
+def make_phase_jpeg(tmp_path):
+    """Procedurally synthesize a phase-distinguishable image on disk (returns its path).
+
+    `clutter` draws many small rectangles/lines -> higher Laplacian variance + edge density;
+    `colorfulness` toggles saturated fills; `exif_dt` (JPEG only) embeds DateTimeOriginal.
+    """
+    def _make(name="img", brightness=128, clutter=0, colorfulness=0, exif_dt=None, fmt="JPEG"):
+        size = (256, 256)
+        img = Image.new("RGB", size, (brightness, brightness, brightness))
+        d = ImageDraw.Draw(img)
+        for i in range(clutter):
+            x, y = (i * 37) % size[0], (i * 53) % size[1]
+            col = ((i * 90) % 256, (i * 150) % 256, (i * 210) % 256) if colorfulness \
+                else (brightness, brightness, brightness)
+            d.rectangle([x, y, x + 8, y + 8], fill=col)
+            d.line([x, y, x + 20, y + 20], fill=(255, 0, 0) if colorfulness else (0, 0, 0))
+        ext = "jpg" if fmt == "JPEG" else "png"
+        path = tmp_path / f"{name}.{ext}"
+        kwargs = {}
+        if exif_dt and fmt == "JPEG":
+            exif = Image.Exif()
+            exif[36867] = exif_dt
+            kwargs["exif"] = exif.tobytes()
+        img.save(str(path), fmt, **kwargs)
+        return str(path)
+    return _make
 
 
 @pytest.fixture(autouse=True)
