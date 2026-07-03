@@ -1,0 +1,6 @@
+# CitiView AV build dependencies (Python 3.9+)
+# Also requires ffmpeg on PATH (not a pip package):
+#   macOS:  brew install ffmpeg
+#   Ubuntu: sudo apt install ffmpeg
+Pillow>=10.0
+numpy>=1.24

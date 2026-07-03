@@ -1,0 +1,40 @@
+# Secrets and sensitive data — never commit
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*secret*
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+package-lock.json
+
+# Generated render artifacts and outputs
+outputs/
+temp_uploads/
+citiview_project_lean_outputs/
+__ui_slide_*.jpg
+*.mp4
+*.pdf
+
+# Scratch / trash
+trash/
+
+# OS / logs
+.DS_Store
+Thumbs.db
+*.log

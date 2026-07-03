@@ -1,0 +1,72 @@
+# Claude config — out of scope for Gemini
+CLAUDE.md
+.claude/
+
+# Dependencies
+node_modules/
+venv/
+.venv/
+vendor/
+bin/
+obj/
+
+# Build and Output
+dist/
+build/
+out/
+target/
+.next/
+.nuxt/
+.turbo/
+.svelte-kit/
+.output/
+storybook-static/
+
+# Caches
+.cache/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.parcel-cache/
+.vite/
+.gradle/
+.vs/
+
+# Secrets and Sensitive Data
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*secret*
+secrets/
+
+# Version Control
+.git/
+
+# Logs and Temp
+*.log
+.DS_Store
+Thumbs.db
+
+# Large Binary Files
+*.pdf
+*.mp4
+*.zip
+*.tar
+*.gz
+*.exe
+*.dll
+*.so
+*.dylib
+*.pyc
+*.pyo
+*.pyd
+
+# Lock Files
+*.lock
+*.lockb
+go.sum
