@@ -7,6 +7,12 @@ Do not defer updates to end-of-session.
 
 ## Entries
 
+### 2026-07-04 — repo reorg: docs/ + assets/, code stays flat
+**What:** Moved `spec.md` and `LOGIC_GUIDE.md` under `docs/`, and the bundled fonts + logo under `assets/` (compositor now anchors them via `ASSETS_DIR`). Root is now just `README.md`, `CLAUDE.md`, the Python/`.mjs` modules, and config. Updated every reference (compositor path constants, CLAUDE.md/README/spec cross-links, one test comment).
+**Why:** Declutter the root and separate docs/assets from source, per the repo-cleanup goal, without touching the working import graph.
+**Alternatives rejected:** moving Python modules into a `src/`/package layout — every import (`from app import …`), the pytest rootdir, and the `.mjs` subprocess path resolution assume a flat root, so it would be pure high-risk churn for a small single-operator tool. Deep `docs/` nesting (`docs/architecture/`, `docs/decisions/`) — only two docs, so a flat `docs/` is clearer.
+**Accepted risks:** `CLAUDE.md` must stay at root (Claude Code loads it from the project root); untracked scratch dirs (`trash/`, `citiview_project_lean_outputs/`) were left untouched.
+
 ### 2026-07-03 — uid-stable text↔image binding, derived per-image copy, previews
 **What:** Slides now join uploaded files to sequence entries by a stable client `uid` (browser posts an aligned `upload_uids` list), not by basename. Uploads write to per-upload subdirs so duplicate basenames don't overwrite. `refine_copy` tiers per-image copy LLM → `derive_default_copy` → blank, and `/analyze-sequence/` always attaches it; the shared `_DEFAULT_COPY` constant was deleted. Added per-image thumbnail previews and `_slides_from_sequence` fail-loud 400s (misaligned/duplicate/unknown uid).
 **Why:** Every slide reused one hardcoded fallback triple whenever per-image copy was empty ("all empty" rendered as "all identical"); duplicate basenames overwrote each other on disk; typed copy was silently dropped once Analyze ran.

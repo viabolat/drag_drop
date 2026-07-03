@@ -94,7 +94,35 @@ python app.py                     # serves UI + API at http://127.0.0.1:8000
   `[MOCK]`/neutral fallback rather than failing. `node` must be on `PATH`. The `.mjs` bridges
   **reject `ANTHROPIC_API_KEY`** to keep usage on subscription billing, never metered API billing.
 - Fonts (`SairaCondensed-Bold.ttf`, `Barlow-Regular.ttf`) and the logo (`logo_cn_white.png`) are
-  bundled in the repo — rendering has no network dependency.
+  bundled in `assets/` — rendering has no network dependency.
+
+### Folder map
+
+```
+.
+├── README.md                     # this file — the entry point
+├── CLAUDE.md                     # deeper module tour (also read by Claude Code)
+├── app.py                        # FastAPI app + inline 5-step UI  (run this)
+├── compositor.py                 # render pipeline → outputs/<base>/<base>.{pdf,mp4}
+├── image_analysis.py             # deterministic sequencing engine
+├── image_signals.py              # objective CV signals + EXIF + perceptual hash
+├── lifecycle_taxonomy.py         # tunable constants/weights/thresholds
+├── analysis_schema.py            # SignalReading / ImageAnalysis dataclasses
+├── vision_provider.py            # pluggable vision seam  ─┐ Node bridges
+├── analyze_image.mjs             # Claude vision bridge    │  (subprocess,
+├── context_generation.py         # grounded context + copy │   resolved from
+├── text_generation.py            # copy subprocess boundary │   this dir — keep
+├── generate_slide_copy.mjs       # Claude copy bridge      ─┘   alongside .py)
+├── assets/                       # bundled fonts + logo
+├── docs/                         # spec.md, LOGIC_GUIDE.md
+├── tests/                        # pytest suite (conftest imports the root modules)
+├── outputs/                      # generated deliverables (gitignored)
+├── temp_uploads/                 # ephemeral upload staging (gitignored)
+└── citiview_project_lean/        # separate config-driven batch pipeline (its own README)
+```
+
+Code lives flat at the repo root on purpose: `app.py`, `tests/`, and the `.mjs` subprocess bridges
+all resolve each other by bare module name / sibling path, so a `src/` package would be pure churn.
 
 ### Architecture overview
 
@@ -113,7 +141,7 @@ never chooses order** (vision emits per-image signals; deterministic Python owns
 Files/sequence entries are joined by a stable client **`uid`** (never basename or row index), so text
 and previews survive reorder and duplicate filenames. Brand constants (colors, canvas size, logo
 size, shear) are hardcoded at the top of `compositor.py`. See **`CLAUDE.md`** for a deeper module
-tour and **`LOGIC_GUIDE.md`** for the decision log.
+tour, **`docs/spec.md`** for the feature spec, and **`docs/LOGIC_GUIDE.md`** for the decision log.
 
 ### Limitations / failure modes / known edge cases
 

@@ -21,7 +21,7 @@ CitiView AV (event production/AV company) needs a local tool for staff to turn r
 
 ## Known Constraints
 - **`ffmpeg` is a hard runtime dependency** invoked via `subprocess` but is not installable via pip and is absent from `requirements.txt` — must be present on `PATH` on the host, or MP4 generation silently fails (caught `FileNotFoundError`, prints a notice, still returns the (nonexistent) mp4 path to the client).
-- Rendering is fully offline: `SairaCondensed-Bold.ttf` + `Barlow-Regular.ttf` and the logo are bundled in the repo; `_font` falls back to the Pillow default if a face fails to load.
+- Rendering is fully offline: `SairaCondensed-Bold.ttf` + `Barlow-Regular.ttf` and the logo are bundled in `assets/`; `_font` falls back to the Pillow default if a face fails to load.
 - Single-process, synchronous pipeline — not designed for concurrent compile jobs. Intermediate frames live in per-run temp dirs (no shared filenames); the only shared surface is `outputs/<base>/`, which `build_output_paths` suffixes (`<base>-2`, …) to avoid clobber.
 
 ## Resolved / Open Questions

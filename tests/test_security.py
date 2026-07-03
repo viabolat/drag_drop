@@ -46,5 +46,5 @@ def test_invalid_image_upload_500_body_has_no_traceback(client_no_raise, mock_fo
 @pytest.mark.integration
 def test_generate_post_reachable_without_authentication(posted_response):
     # reason: documents the intentional no-auth posture (single-operator local tool, see
-    # spec.md) so it's a visible, locked-in scope decision rather than an unexamined gap
+    # docs/spec.md) so it's a visible, locked-in scope decision rather than an unexamined gap
     assert posted_response.status_code not in (401, 403)

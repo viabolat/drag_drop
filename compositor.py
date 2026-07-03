@@ -18,12 +18,13 @@ STAMP_TEXT = (210, 214, 220)
 DIM_TEXT = (120, 124, 130)
 SHEAR = 0.16  # forward italic shear (tops lean right), applied to headline text
 
-# reason: fonts + logo are bundled in-repo; anchored to this file's directory so the
-# render works regardless of the process CWD (server, tests, or a one-off script).
+# reason: fonts + logo are bundled in-repo under assets/; anchored to this file's directory so
+# the render works regardless of the process CWD (server, tests, or a one-off script).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DISPLAY_FONT_PATH = os.path.join(BASE_DIR, "SairaCondensed-Bold.ttf")  # condensed display face
-BODY_FONT_PATH = os.path.join(BASE_DIR, "Barlow-Regular.ttf")
-LOGO_PATH = os.path.join(BASE_DIR, "logo_cn_white.png")
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+DISPLAY_FONT_PATH = os.path.join(ASSETS_DIR, "SairaCondensed-Bold.ttf")  # condensed display face
+BODY_FONT_PATH = os.path.join(ASSETS_DIR, "Barlow-Regular.ttf")
+LOGO_PATH = os.path.join(ASSETS_DIR, "logo_cn_white.png")
 LOGO_HEIGHT = 96  # measured from reference: logo ink ~96px tall at pad (60, 52) from top-left
 
 # Final deliverables land under outputs/<base>/ — never the project root.

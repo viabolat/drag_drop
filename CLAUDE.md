@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-operator local web tool ("CitiView AV — Campaign Studio") that turns a batch of event photos into
 branded social media assets: a portrait MP4 slideshow and a matching PDF deck. There is no database, no
-auth, and no persistence beyond the generated output files — see `spec.md` for the full feature spec and
-known open questions/bugs.
+auth, and no persistence beyond the generated output files — see `docs/spec.md` for the full feature
+spec and known open questions/bugs, and `docs/LOGIC_GUIDE.md` for the decision log.
 
 ## Commands
 
@@ -23,7 +23,8 @@ is **not** listed in `requirements.txt`. If missing, `compositor.render_post_pac
 `FileNotFoundError`, logs a notice, and still returns an `mp4` path that doesn't exist on disk.
 
 Fonts (`SairaCondensed-Bold.ttf`, `Barlow-Regular.ttf`) and the brand logo (`logo_cn_white.png`) are
-bundled directly in the repo root — there is no runtime network dependency for rendering.
+bundled in `assets/` (referenced via `compositor.ASSETS_DIR`) — there is no runtime network
+dependency for rendering.
 
 An optional `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Code subscription token, generated via
 `claude setup-token`, loaded via `.env`/`python-dotenv`) enables AI-generated slide copy through
