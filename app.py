@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse
@@ -21,16 +22,47 @@ def get_vision_analyzer():
     return ClaudeVisionAnalyzer()
 
 
-def sanitize_upload_filename(filename: str) -> str:
+_SAFE_PREFIX_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def sanitize_upload_filename(filename: str, prefix: str = "") -> str:
     # reason: filename is attacker-controlled; without this, "../../etc/x" style names
     # escape UPLOAD_DIR via os.path.join (path traversal)
     safe_name = os.path.basename(filename)
     if safe_name in ("", ".", ".."):
         raise HTTPException(status_code=400, detail="Invalid filename.")
-    file_path = os.path.join(UPLOAD_DIR, safe_name)
+    # reason: two uploads sharing a basename (e.g. two "photo.jpg") would overwrite each other on
+    # disk and collapse into a single image. Giving each upload its own subdir guarantees a unique
+    # path while keeping the basename PRISTINE, so it can still serve as the clean display name.
+    # prefix is caller/attacker-derived (upload index or client uid) so it is stripped to a safe
+    # charset first — the abspath guard below remains the backstop against path traversal.
+    base_dir = UPLOAD_DIR
+    if prefix:
+        safe_prefix = _SAFE_PREFIX_RE.sub("", str(prefix))
+        if safe_prefix:
+            base_dir = os.path.join(UPLOAD_DIR, safe_prefix)
+            os.makedirs(base_dir, exist_ok=True)
+    file_path = os.path.join(base_dir, safe_name)
     if not os.path.abspath(file_path).startswith(os.path.abspath(UPLOAD_DIR) + os.sep):
         raise HTTPException(status_code=400, detail="Invalid filename.")
     return file_path
+
+
+def _remove_upload(path: str) -> None:
+    """Delete a temp upload and prune its now-empty per-upload subdir (dup-basename scheme),
+    leaving UPLOAD_DIR clean. Never raises."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+    parent = os.path.dirname(os.path.abspath(path))
+    upload_root = os.path.abspath(UPLOAD_DIR)
+    if parent != upload_root and parent.startswith(upload_root + os.sep):
+        try:
+            os.rmdir(parent)  # only succeeds when empty — safe to attempt unconditionally
+        except OSError:
+            pass
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_interface():
@@ -101,7 +133,8 @@ async def serve_interface():
             const dropzone = document.getElementById('dropzone');
             const fileInput = document.getElementById('fileInput');
             const queueContainer = document.getElementById('filePreviewQueue');
-            let fileArray = [];
+            let fileArray = [];   // [{ file, uid, url }] — uid is the stable per-image identity
+            let uidCounter = 0;   // monotonic; never reused, survives reorder, unique per drop
 
             dropzone.addEventListener('click', () => fileInput.click());
             dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('border-zinc-600'); });
@@ -113,22 +146,36 @@ async def serve_interface():
             });
             fileInput.addEventListener('change', () => handleFiles(fileInput.files));
 
+            // Preview object URLs live for the page's lifetime (there is no per-file remove UI);
+            // release them when the page is torn down so they can't leak across a reload.
+            function clearObjectUrls() {
+                fileArray.forEach(f => { try { URL.revokeObjectURL(f.url); } catch (e) {} });
+            }
+            window.addEventListener('beforeunload', clearObjectUrls);
+
             function handleFiles(files) {
                 for (let file of files) {
-                    fileArray.push(file);
-                    const idx = fileArray.length - 1;
-                    
+                    const uid = "u" + (uidCounter++);
+                    const url = URL.createObjectURL(file);   // revoked on page unload (clearObjectUrls)
+                    fileArray.push({ file, uid, url });
+
                     const card = document.createElement('div');
+                    card.id = "card_" + uid;
                     card.className = "bg-zinc-950 p-4 border border-zinc-800 rounded-lg grid grid-cols-3 gap-4 items-center";
                     card.innerHTML = `
-                        <div class="text-xs text-zinc-400 truncate font-mono">${file.name}</div>
+                        <div class="space-y-2">
+                            <img src="${url}" alt="" class="w-full h-24 object-cover rounded border border-zinc-800">
+                            <div class="text-xs text-zinc-400 truncate font-mono">${esc(file.name)}</div>
+                        </div>
                         <div class="col-span-2 space-y-2">
-                            <input type="text" placeholder="Kicker (e.g. ARENA)" id="kicker_${idx}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
-                            <input type="text" placeholder="Headline (3-6 words)" id="headline_${idx}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
-                            <input type="text" placeholder="Ethos Sub Line" id="sub_${idx}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
+                            <input type="text" placeholder="Kicker (e.g. ARENA)" id="kicker_${uid}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
+                            <input type="text" placeholder="Headline (3-6 words)" id="headline_${uid}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
+                            <input type="text" placeholder="Ethos Sub Line" id="sub_${uid}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
                         </div>
                     `;
                     queueContainer.appendChild(card);
+                    // if a sequence was already analyzed, new cards are locked too (Review owns copy)
+                    if (analysis) setUploadCopyReadonly(true);
                 }
             }
 
@@ -142,9 +189,11 @@ async def serve_interface():
                 const response = await fetch('/generate-copy/', { method: 'POST', body: formData });
                 const result = await response.json();
                 result.slides.forEach((slide, i) => {
-                    document.getElementById(`kicker_${i}`).value = slide.kicker;
-                    document.getElementById(`headline_${i}`).value = slide.headline;
-                    document.getElementById(`sub_${i}`).value = slide.sub;
+                    if (!fileArray[i]) return;
+                    const uid = fileArray[i].uid;
+                    document.getElementById(`kicker_${uid}`).value = slide.kicker;
+                    document.getElementById(`headline_${uid}`).value = slide.headline;
+                    document.getElementById(`sub_${uid}`).value = slide.sub;
                 });
             }
 
@@ -160,34 +209,72 @@ async def serve_interface():
             }
             function confColor(c) { return c >= 0.7 ? "text-green-400" : (c >= 0.45 ? "text-yellow-400" : "text-red-400"); }
 
+            function setUploadCopyReadonly(readonly) {
+                // After Analyze, the Review panel is the single copy surface — lock the upload-card
+                // fields so the two can't diverge (no silent drops). Editable again on a fresh page.
+                fileArray.forEach(f => {
+                    ["kicker_","headline_","sub_"].forEach(pre => {
+                        const el = document.getElementById(pre + f.uid);
+                        if (el) {
+                            el.readOnly = readonly;
+                            el.classList.toggle("opacity-40", readonly);
+                            el.classList.toggle("cursor-not-allowed", readonly);
+                            el.title = readonly ? "Copy is now edited in the Review panel below." : "";
+                        }
+                    });
+                });
+            }
+
             async function analyzeSequence() {
                 if (fileArray.length === 0) { alert("Please drop files first."); return; }
                 const status = document.getElementById("analysisStatus");
                 status.textContent = "Analyzing " + fileArray.length + " image(s)…";
                 const formData = new FormData();
-                for (let i = 0; i < fileArray.length; i++) formData.append("files", fileArray[i]);
+                for (let i = 0; i < fileArray.length; i++) formData.append("files", fileArray[i].file);
                 formData.append("event_context", document.getElementById("copyContext").value);
                 formData.append("generate_copy", document.getElementById("genCopy").checked ? "true" : "false");
                 try {
                     const response = await fetch('/analyze-sequence/', { method: 'POST', body: formData });
                     const result = await response.json();
-                    analysis = (result.analyses || []).map(a => ({
-                        image_ref: a.image_ref,
-                        state_label: a.state_label,
-                        state_confidence: a.state_confidence,
-                        sequence_confidence: a.sequence_confidence,
-                        review_required: a.review_required,
-                        ambiguity_flags: a.ambiguity_flags || [],
-                        ordering_rationale: a.ordering_rationale || "",
-                        phase_summary: a.phase_summary || "",
-                        event_context: a.event_context || "",
-                        kicker: (a.copy && a.copy.kicker) || "",
-                        headline: (a.copy && a.copy.headline) || "",
-                        sub: (a.copy && a.copy.sub) || ""
-                    }));
+                    analysis = (result.analyses || []).map(a => {
+                        // Bind each row to its stable client uid (via upload_index) so copy AND
+                        // preview follow the image through any reorder — never basename/row index.
+                        const src = fileArray[a.upload_index];
+                        return {
+                            image_ref: a.image_ref,
+                            upload_index: a.upload_index,
+                            uid: src ? src.uid : null,
+                            state_label: a.state_label,
+                            state_confidence: a.state_confidence,
+                            sequence_confidence: a.sequence_confidence,
+                            review_required: a.review_required,
+                            ambiguity_flags: a.ambiguity_flags || [],
+                            ordering_rationale: a.ordering_rationale || "",
+                            phase_summary: a.phase_summary || "",
+                            event_context: a.event_context || "",
+                            kicker: (a.copy && a.copy.kicker) || "",
+                            headline: (a.copy && a.copy.headline) || "",
+                            sub: (a.copy && a.copy.sub) || ""
+                        };
+                    });
+                    // Single source of truth: carry any copy the operator already entered in the
+                    // upload cards (typed, or filled by AUTO-GENERATE COPY) into the matching review
+                    // item by uid, then lock the upload cards so Review is the only copy surface.
+                    let migrated = 0;
+                    analysis.forEach(a => {
+                        if (!a.uid) return;
+                        let moved = false;
+                        [["kicker","kicker_"],["headline","headline_"],["sub","sub_"]].forEach(([field, pre]) => {
+                            const el = document.getElementById(pre + a.uid);
+                            if (el && el.value.trim()) { a[field] = el.value; moved = true; }
+                        });
+                        if (moved) migrated++;
+                    });
+                    setUploadCopyReadonly(true);
                     const flagged = analysis.filter(a => a.review_required).length;
                     status.textContent = "Proposed sequence ready — " + analysis.length + " image(s), "
-                        + flagged + " flagged for review.";
+                        + flagged + " flagged for review."
+                        + (migrated ? "  Existing copy for " + migrated + " image(s) carried into Review below." : "");
                     renderReview();
                 } catch (e) {
                     status.textContent = "Analysis failed: " + e;
@@ -203,6 +290,9 @@ async def serve_interface():
                         `<span class="text-[10px] bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded">${esc(f)}</span>`).join(" ");
                     const opts = STATE_LABELS.map(l =>
                         `<option value="${l}" ${l === a.state_label ? "selected" : ""}>${l}</option>`).join("");
+                    // preview follows the image by uid, so reorder never desyncs thumb from row
+                    const src = fileArray.find(f => f.uid === a.uid);
+                    const thumb = src ? src.url : "";
                     return `
                     <div class="bg-zinc-950 p-4 border ${border} rounded-lg space-y-3">
                         <div class="flex items-center gap-3">
@@ -210,6 +300,7 @@ async def serve_interface():
                                 <button type="button" onclick="moveItem(${i},-1)" class="text-zinc-500 hover:text-white text-xs leading-none">&#9650;</button>
                                 <button type="button" onclick="moveItem(${i},1)" class="text-zinc-500 hover:text-white text-xs leading-none">&#9660;</button>
                             </div>
+                            <img src="${thumb}" alt="" class="w-14 h-14 object-cover rounded border border-zinc-800 shrink-0">
                             <span class="text-xs font-mono bg-red-600/20 text-red-400 px-2 py-1 rounded">#${i + 1}</span>
                             <span class="text-xs text-zinc-300 font-mono truncate flex-1">${esc(a.image_ref)}</span>
                             <select onchange="updateField(${i},'state_label',this.value)" class="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white">${opts}</select>
@@ -245,27 +336,37 @@ async def serve_interface():
 
                 const formData = new FormData();
                 formData.append("output_name", document.getElementsByName("output_name")[0].value);
-                for (let i = 0; i < fileArray.length; i++) formData.append("files", fileArray[i]);
+                // Files AND their uids go in the SAME fileArray order, so the server can zip them
+                // into a uid->path map and join by uid — never basename, never row index.
+                const uids = [];
+                for (let i = 0; i < fileArray.length; i++) {
+                    formData.append("files", fileArray[i].file);
+                    uids.push(fileArray[i].uid);
+                }
+                formData.append("upload_uids", JSON.stringify(uids));
 
                 if (analysis) {
-                    // reorder-safe path: sequence order + per-image copy, joined by image_ref on the server
+                    // reorder-safe path: sequence order + per-image copy, joined by uid on the server.
+                    // Copy is already populated per image (LLM/derived); blank stays blank on purpose.
                     const sequence = analysis.map((a, i) => ({
+                        uid: a.uid,
                         image_ref: a.image_ref,
                         sequence_index: i,
                         state_label: a.state_label,
-                        kicker: a.kicker || "PRODUCTION",
-                        headline: a.headline || "CRAFT IN EXECUTION",
-                        sub: a.sub || "Unseen architecture working behind the scene."
+                        kicker: a.kicker || "",
+                        headline: a.headline || "",
+                        sub: a.sub || ""
                     }));
                     formData.append("sequence_json", JSON.stringify(sequence));
                 } else {
-                    // legacy positional path (unchanged): per-file cards, index-aligned
+                    // legacy positional path: per-file cards, index-aligned. Blank stays blank.
                     let metadata = [];
                     for (let i = 0; i < fileArray.length; i++) {
+                        const uid = fileArray[i].uid;
                         metadata.push({
-                            kicker: document.getElementById(`kicker_${i}`).value || "PRODUCTION",
-                            headline: document.getElementById(`headline_${i}`).value || "CRAFT IN EXECUTION",
-                            sub: document.getElementById(`sub_${i}`).value || "Unseen architecture working behind the scene."
+                            kicker: document.getElementById(`kicker_${uid}`).value,
+                            headline: document.getElementById(`headline_${uid}`).value,
+                            sub: document.getElementById(`sub_${uid}`).value
                         });
                     }
                     formData.append("metadata_json", JSON.stringify(metadata));
@@ -302,30 +403,33 @@ async def analyze_sequence(
     /generate-post/). Optionally pre-fills per-image copy grounded in each image's own state."""
     written_paths = []
     try:
-        for file in files:
-            file_path = sanitize_upload_filename(file.filename)
+        # per-upload subdir prefix => two "photo.jpg" uploads stay distinct on disk
+        for idx, file in enumerate(files):
+            file_path = sanitize_upload_filename(file.filename, prefix=str(idx))
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             written_paths.append(file_path)
 
         analyses = analyze_and_sequence(written_paths, event_context, get_vision_analyzer())
-        copies = refine_copy(analyses) if generate_copy else [None] * len(analyses)
+        # Always attach per-image copy so the review UI is pre-populated per image and never
+        # collapses to a shared constant. use_llm gates only the optional live-LLM tier; the
+        # deterministic per-image derived tier is always on (see context_generation.refine_copy).
+        copies = refine_copy(analyses, use_llm=generate_copy)
 
         idx_by_path = {p: i for i, p in enumerate(written_paths)}
         out = []
         for a, copy in zip(analyses, copies):
             d = a.to_dict()
-            # image_ref (uploaded basename) is the join key back to files on /generate-post/;
-            # upload_index disambiguates should basenames collide.
+            # image_ref is the CLEAN display basename (per-upload subdir keeps it pristine; may
+            # still collide across duplicate uploads). The STABLE join key back to files on
+            # /generate-post/ is the client uid, carried via upload_index below — never image_ref.
             d["image_ref"] = os.path.basename(a.image_path)
             d["upload_index"] = idx_by_path.get(a.image_path)
-            if copy is not None:
-                d["copy"] = copy
+            d["copy"] = copy
             out.append(d)
     finally:
         for path in written_paths:
-            if os.path.exists(path):
-                os.remove(path)
+            _remove_upload(path)
 
     return {"analyses": out}
 
@@ -338,7 +442,7 @@ def _slides_from_metadata(metadata_json, files, written_paths):
         raise HTTPException(status_code=400, detail="Invalid data shape arrays.")
     slides_dataset = []
     for idx, file in enumerate(files):
-        file_path = sanitize_upload_filename(file.filename)
+        file_path = sanitize_upload_filename(file.filename, prefix=str(idx))
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         written_paths.append(file_path)
@@ -351,33 +455,54 @@ def _slides_from_metadata(metadata_json, files, written_paths):
     return slides_dataset
 
 
-def _slides_from_sequence(sequence_json, files, written_paths):
-    """New reorder-safe path: build slides in operator-approved sequence order, joining each
-    sequence entry to its uploaded file by image_ref (basename) — NEVER by positional index."""
+def _slides_from_sequence(sequence_json, files, written_paths, upload_uids_json):
+    """Reorder-safe path: build slides in operator-approved sequence order, joining each sequence
+    entry to its uploaded file by the STABLE client uid — never by basename or positional index.
+    Fails loudly if the uid<->file alignment is broken, rather than silently dropping slides or
+    mis-binding copy/images to the wrong file."""
     try:
         sequence = json.loads(sequence_json)
+        upload_uids = json.loads(upload_uids_json) if upload_uids_json else None
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid data shape arrays.")
-    path_by_ref = {}
-    for file in files:
-        file_path = sanitize_upload_filename(file.filename)
+
+    # Files and uids are sent in the SAME order; validate that alignment loudly before trusting it.
+    if not isinstance(upload_uids, list):
+        raise HTTPException(status_code=400,
+                            detail="sequence_json requires an aligned upload_uids list.")
+    if len(upload_uids) != len(files):
+        raise HTTPException(status_code=400,
+                            detail=f"upload_uids ({len(upload_uids)}) does not align with files "
+                                   f"({len(files)}).")
+
+    path_by_uid = {}
+    for uid, file in zip(upload_uids, files):
+        # prefix the on-disk name with the uid so two same-basename uploads stay distinct
+        file_path = sanitize_upload_filename(file.filename, prefix=str(uid))
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         written_paths.append(file_path)
-        path_by_ref[os.path.basename(file_path)] = file_path
+        if uid in path_by_uid:
+            raise HTTPException(status_code=400, detail=f"Duplicate upload uid: {uid!r}.")
+        path_by_uid[uid] = file_path
 
     ordered = sorted(sequence, key=lambda e: e.get("sequence_index", 0))
     n = len(ordered)
     slides_dataset = []
     for pos, entry in enumerate(ordered):
-        file_path = path_by_ref.get(entry.get("image_ref"))
+        uid = entry.get("uid")
+        file_path = path_by_uid.get(uid)
         if file_path is None:
-            continue  # a sequence entry with no matching upload is skipped, not fatal
+            # Every sequence entry must resolve to an uploaded file by uid; a miss means the
+            # text<->image binding is broken, so fail loudly rather than drop or mis-render.
+            raise HTTPException(status_code=400,
+                                detail=f"Sequence entry uid {uid!r} has no matching uploaded file.")
         slide = {
             "path": file_path,
-            "kicker": entry.get("kicker") or "PRODUCTION",
-            "headline": entry.get("headline") or "CRAFT IN EXECUTION",
-            "sub": entry.get("sub") or "Unseen architecture working behind the scene.",
+            # per-image copy already resolved upstream (LLM -> derived -> blank); blank stays blank
+            "kicker": entry.get("kicker") or "",
+            "headline": entry.get("headline") or "",
+            "sub": entry.get("sub") or "",
         }
         frac = entry.get("scale_frac")
         slide["scale_frac"] = frac if frac is not None else compute_scale_frac(
@@ -395,12 +520,13 @@ async def generate_post(
     output_name: str = Form(...),
     metadata_json: str = Form(None),
     sequence_json: str = Form(None),
+    upload_uids: str = Form(None),
     files: list[UploadFile] = File(...)
 ):
     written_paths = []  # reason: tracked separately so a partial write still gets cleaned up
     try:
         if sequence_json is not None:
-            slides_dataset = _slides_from_sequence(sequence_json, files, written_paths)
+            slides_dataset = _slides_from_sequence(sequence_json, files, written_paths, upload_uids)
         else:
             # legacy positional contract (metadata_json required when no sequence provided)
             slides_dataset = _slides_from_metadata(metadata_json, files, written_paths)
@@ -410,8 +536,7 @@ async def generate_post(
     finally:
         # reason: must run even if metadata indexing or compositing raises, so uploads never linger
         for path in written_paths:
-            if os.path.exists(path):
-                os.remove(path)
+            _remove_upload(path)
 
     if not outputs:
         raise HTTPException(status_code=500, detail="Render generation fault.")

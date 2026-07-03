@@ -66,28 +66,96 @@ def generate_event_context(state_label: str, alt_description: str, event_context
     return text, context_confidence
 
 
-# Fallback copy (matches the app's legacy per-field defaults) when the LLM path is unavailable.
-_DEFAULT_COPY = {
-    "kicker": "PRODUCTION",
-    "headline": "CRAFT IN EXECUTION",
-    "sub": "Unseen architecture working behind the scene.",
+# Per-macro-phase brand copy. The kicker/headline are grounded in THIS image's detected state
+# (a different state => different copy), never a single shared constant; the sub is grounded in
+# the image's own event_context below, so it varies per image even within one phase. This is the
+# tier-2 fallback that guarantees "different images -> different text" with no LLM in the loop.
+_PHASE_KICKER = {
+    "venue_only": "THE VENUE",
+    "pre_setup": "LOAD-IN",
+    "early_setup": "THE BUILD",
+    "mid_setup": "THE BUILD",
+    "late_setup": "FINAL DRESS",
+    "final_ready": "DOORS",
+    "live_event": "SHOWTIME",
+    "post_event_teardown": "STRIKE",
+    tax.AMBIGUOUS: "PRODUCTION",
+}
+
+_PHASE_HEADLINE = {
+    "venue_only": "Where it all begins",
+    "pre_setup": "Gear hits the floor",
+    "early_setup": "Structure goes up",
+    "mid_setup": "The room takes shape",
+    "late_setup": "Down to the details",
+    "final_ready": "Ready for the room",
+    "live_event": "The moment, live",
+    "post_event_teardown": "A clean strike",
+    tax.AMBIGUOUS: "Craft in execution",
 }
 
 
-def refine_copy(analyses: List) -> List[dict]:
-    """Turn each image's OWN grounded event_context into {kicker,headline,sub}, index-aligned to
-    `analyses` (i.e. to the computed sequence order). Runs AFTER ordering and is given no ability
-    to reorder. Reuses the existing generate_slide_copy Node path (count=1 per image, so each
-    image's copy is grounded in its own detected state). Never raises (generate_slide_copy
-    already degrades to [MOCK] copy on any failure)."""
+def _sub_from_context(event_context: str) -> str:
+    """Ethos sub-line grounded in the image's OWN event_context (so it differs per image). Strips
+    the templated lead-in and caps length; returns '' when there is no grounded context."""
+    ctx = (event_context or "").strip()
+    lead = "This image shows "
+    if ctx.startswith(lead):
+        ctx = ctx[len(lead):]
+    ctx = ctx.strip().rstrip(".")
+    if not ctx:
+        return ""
+    ctx = ctx[0].upper() + ctx[1:]
+    return ctx[:140].strip()
+
+
+def derive_default_copy(state_label: str, event_context: str, phase_summary: str = "") -> dict:
+    """Deterministic per-image fallback copy grounded in THIS image's detected state + context.
+    Two images with a different state or a different event_context get different copy — there is
+    no shared brand constant. Used as the tier-2 fallback beneath live LLM copy."""
+    kicker = _PHASE_KICKER.get(state_label) or "PRODUCTION"
+    headline = _PHASE_HEADLINE.get(state_label) or (phase_summary or "").strip() or "Craft in execution"
+    return {"kicker": kicker, "headline": headline, "sub": _sub_from_context(event_context)}
+
+
+def _is_mock_copy(copy: dict) -> bool:
+    """True if the LLM path fell back to its [MOCK] placeholder — never trust it over derived copy
+    (the [MOCK] fallback is uniform across images and would re-introduce the repeated-text bug)."""
+    return any(str(copy.get(k, "")).startswith("[MOCK]") for k in ("kicker", "headline", "sub"))
+
+
+def refine_copy(analyses: List, use_llm: bool = True) -> List[dict]:
+    """Per-image {kicker,headline,sub}, index-aligned to `analyses` (i.e. the computed sequence
+    order). Runs AFTER ordering, with no ability to reorder. Each field resolves by priority:
+
+        1. live grounded LLM copy for THIS image  (only when use_llm and not a [MOCK] fallback)
+        2. deterministic per-image copy derived from THIS image's state_label + event_context
+        3. '' (blank)                              — only if neither yields text
+
+    So different images get different copy without any shared constant. Never raises
+    (generate_slide_copy already degrades safely; a mock result is discarded in favor of tier 2)."""
     out = []
     for a in analyses:
-        ctx = getattr(a, "event_context", "") or getattr(a, "phase_summary", "")
-        slides = generate_slide_copy(ctx, 1)
-        copy = slides[0] if slides else dict(_DEFAULT_COPY)
-        out.append({
-            "kicker": copy.get("kicker") or _DEFAULT_COPY["kicker"],
-            "headline": copy.get("headline") or _DEFAULT_COPY["headline"],
-            "sub": copy.get("sub") or _DEFAULT_COPY["sub"],
-        })
+        state_label = getattr(a, "state_label", "") or ""
+        event_context = getattr(a, "event_context", "") or ""
+        phase = getattr(a, "phase_summary", "") or ""
+        derived = derive_default_copy(state_label, event_context, phase)
+
+        llm = None
+        if use_llm:
+            ctx = event_context or phase
+            slides = generate_slide_copy(ctx, 1)  # count=1: copy grounded in this image's context
+            cand = slides[0] if slides else None
+            if isinstance(cand, dict) and not _is_mock_copy(cand):
+                llm = cand
+
+        copy = {}
+        for field in ("kicker", "headline", "sub"):
+            if llm and str(llm.get(field, "")).strip():
+                copy[field] = llm[field]
+            elif str(derived.get(field, "")).strip():
+                copy[field] = derived[field]
+            else:
+                copy[field] = ""
+        out.append(copy)
     return out

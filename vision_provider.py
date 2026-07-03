@@ -120,7 +120,16 @@ class DictVisionAnalyzer:
         self.mapping = mapping
 
     def analyze(self, image_path: str, event_context: str = "") -> Dict[str, object]:
-        return dict(self.mapping.get(image_path, MOCK_SEMANTIC))
+        if image_path in self.mapping:
+            return dict(self.mapping[image_path])
+        # Uploads are written under a per-upload subdir for duplicate-basename safety, so the
+        # runtime path (…/0/a.jpg) differs from a mapping keyed by a flat path (…/a.jpg). Fall
+        # back to a basename match so canned signals still bind to the intended image in tests.
+        base = os.path.basename(image_path)
+        for key, val in self.mapping.items():
+            if os.path.basename(key) == base:
+                return dict(val)
+        return dict(MOCK_SEMANTIC)
 
 
 def _validate_semantic(parsed: object) -> Dict[str, object]:
