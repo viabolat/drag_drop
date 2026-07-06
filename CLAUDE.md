@@ -73,10 +73,18 @@ sequencing).
   duplicate uid, or a sequence entry whose uid has no uploaded file. When `sequence_json` is absent
   the legacy positional `metadata_json` path runs (now also **400-validated** for length/shape).
   The UI is a numbered 5-step flow — Add photos → Event details → Analyze & Sequence → Review
-  (reorder / relabel / edit context + copy) → Export — with per-image thumbnail previews, copy that
-  migrates from the upload cards into the review panel (then the cards go read-only), and prerequisite
-  gating (Analyze/Export disabled until a photo exists; the review panel hidden until Analyze runs).
-  There is a single copy path: the old generic `/generate-copy/` button/route was **removed**.
+  (reorder / relabel / edit context + copy / remove / add) → Export — with per-image thumbnail
+  previews, copy that migrates from the upload cards into the review panel (then the cards go
+  read-only), and prerequisite gating (Analyze/Export disabled until a photo exists; the review panel
+  hidden until Analyze runs). Item management is client-side hard delete + incremental add:
+  `removeItem(uid)` (confirm-gated, on both upload cards and review rows) drops the photo from
+  `fileArray` and `analysis` in one step; photos added after Analyze are analyzed **incrementally**
+  (only the new files posted to `/analyze-sequence/`) and appended to the sequence — existing rows and
+  edits are never re-derived, and cross-set ordering/near-dup detection is NOT recomputed (operator
+  repositions manually). Export uploads only files whose uid is in the sequence, so
+  staged-but-unanalyzed photos (failed incremental analyze → status message + retry) can't silently
+  diverge from the render. There is a single copy path: the old generic `/generate-copy/` button/route
+  was **removed**.
 
 Known: opaque Claude Code subprocess failures under rapid sequential vision calls (surface as the
 bridge's terse "Claude Code process exited with code 1"; root cause unconfirmed). Such images
@@ -91,9 +99,12 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
   - `GET /` returns a single self-contained HTML page (Tailwind via CDN, no build step) with inline
     vanilla JS for the drag-and-drop UI, laid out as a numbered 5-step flow (Add photos → Event
     details → Analyze & Sequence → Review → Export). Each uploaded file gets a stable client `uid`, a
-    thumbnail preview, and three free-text fields (`kicker`, `headline`, `sub`) that map 1:1 to slide
-    overlay text. Analyze/Export are disabled until ≥1 photo exists; the Review panel is hidden until
-    Analyze runs. There is a single copy path — the old generic `/generate-copy/` route was removed.
+    thumbnail preview, a confirm-gated **Remove photo** control, and three free-text fields (`kicker`,
+    `headline`, `sub`) that map 1:1 to slide overlay text. The Review panel adds per-row **Remove**
+    and a **+ Add more photos** button (incremental analyze of just the new files, appended to the
+    sequence). Analyze is disabled until ≥1 photo exists; Export until ≥1 *active* (in-sequence)
+    photo; the Review panel is hidden until Analyze runs. There is a single copy path — the old
+    generic `/generate-copy/` route was removed.
   - `POST /analyze-sequence/` accepts `files`, `event_context` (free-text), and `generate_copy`
     (bool). It classifies each photo's lifecycle state, orders them deterministically, grounds a
     per-image Event Context, and **always** attaches per-image `copy` (`refine_copy`, tiered

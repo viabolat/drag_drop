@@ -36,7 +36,8 @@ Code subscription (never a metered API key).
 The page walks you down a numbered flow. Controls stay disabled until their prerequisite is met, so
 you can't get out of order.
 
-1. **Add Photos** — drag & drop (or browse) your event photos. A thumbnail preview appears for each.
+1. **Add Photos** — drag & drop (or browse) your event photos. A thumbnail preview appears for each,
+   with a **Remove photo** link if you dropped the wrong one.
 2. **Event Details** — give the output a file name (required) and, optionally, a one-line **Event
    Context** (e.g. *"Corporate gala, downtown Austin, LED wall + stage lighting"*). That context is
    used in the next step to keep the wording tied to the real event.
@@ -44,7 +45,11 @@ you can't get out of order.
    write a grounded description of each. Tick **"also draft slide copy from each photo"** to have it
    draft kicker/headline/sub text too. *(Enabled once you've added at least one photo.)*
 4. **Review, Edit & Reorder** — appears after Analyze. Reorder with the arrows, fix a mislabeled
-   stage, and edit the context or copy for any photo. **Your edits always win.**
+   stage, and edit the context or copy for any photo. **Your edits always win.** You can also manage
+   the working set here: **Remove** drops a photo from the sequence and the export (confirmed first;
+   one-way for the session — your original file on disk is untouched), and **+ Add more photos**
+   analyzes just the new files and appends them to the end of the sequence, leaving your existing
+   order and edits alone — use the arrows to slot them in.
 5. **Compile & Export** — renders the MP4 + PDF into `outputs/<your-name>/`.
 
 You can skip Analyze and just type copy on each photo card, then Export — but Analyze gives you
