@@ -123,8 +123,12 @@ async def serve_interface():
 
                 <!-- Step 4 — Review, edit & reorder (hidden until Analyze produces a sequence) -->
                 <div id="reviewSection" class="bg-zinc-900 border border-zinc-800 p-6 rounded-lg space-y-4 hidden">
-                    <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">4. Review, Edit &amp; Reorder</h2>
-                    <p class="text-xs text-zinc-500">Reorder with the arrows, relabel the lifecycle state, and edit the Event Context or copy for any photo. Your edits always win over the auto-draft.</p>
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-sm font-semibold tracking-wider text-red-500 uppercase">4. Review, Edit &amp; Reorder</h2>
+                        <button type="button" onclick="document.getElementById('addFileInput').click()" class="text-xs bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded transition">+ Add more photos</button>
+                        <input type="file" id="addFileInput" multiple class="hidden" accept="image/*">
+                    </div>
+                    <p class="text-xs text-zinc-500">Reorder with the arrows, relabel the lifecycle state, and edit the Event Context or copy for any photo. Your edits always win over the auto-draft. Remove a photo to drop it from the sequence and the export; add more photos to have just the new ones analyzed and appended (your existing order and edits stay untouched — reposition new arrivals with the arrows).</p>
                     <div id="analysisReview" class="space-y-3"></div>
                 </div>
 
@@ -153,19 +157,26 @@ async def serve_interface():
                 dropzone.classList.remove('border-zinc-600');
                 handleFiles(e.dataTransfer.files);
             });
-            fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+            fileInput.addEventListener('change', () => { handleFiles(fileInput.files); fileInput.value = ""; });
+            // Step 4's "+ Add more photos" — same intake path; handleFiles auto-analyzes the
+            // additions because a sequence already exists. Clearing .value lets the same file be
+            // re-picked (e.g. after a remove or a failed incremental analysis).
+            document.getElementById('addFileInput').addEventListener('change', function () {
+                handleFiles(this.files); this.value = "";
+            });
 
-            // Preview object URLs live for the page's lifetime (there is no per-file remove UI);
-            // release them when the page is torn down so they can't leak across a reload.
+            // Preview object URLs are revoked eagerly when an item is removed (removeItem) and
+            // in bulk when the page is torn down, so they can't leak across a reload.
             function clearObjectUrls() {
                 fileArray.forEach(f => { try { URL.revokeObjectURL(f.url); } catch (e) {} });
             }
             window.addEventListener('beforeunload', clearObjectUrls);
 
             function handleFiles(files) {
+                if (!files || files.length === 0) return;
                 for (let file of files) {
                     const uid = "u" + (uidCounter++);
-                    const url = URL.createObjectURL(file);   // revoked on page unload (clearObjectUrls)
+                    const url = URL.createObjectURL(file);   // revoked on remove or page unload
                     fileArray.push({ file, uid, url });
 
                     const card = document.createElement('div');
@@ -175,6 +186,7 @@ async def serve_interface():
                         <div class="space-y-2">
                             <img src="${url}" alt="" class="w-full h-24 object-cover rounded border border-zinc-800">
                             <div class="text-xs text-zinc-400 truncate font-mono">${esc(file.name)}</div>
+                            <button type="button" onclick="removeItem('${uid}')" class="text-[11px] text-zinc-500 hover:text-red-400 underline">Remove photo</button>
                         </div>
                         <div class="col-span-2 space-y-2">
                             <input type="text" placeholder="Kicker (e.g. ARENA)" id="kicker_${uid}" class="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500">
@@ -187,7 +199,14 @@ async def serve_interface():
                     if (analysis) setUploadCopyReadonly(true);
                 }
                 refreshGating();  // enable Analyze/Export now that at least one photo exists
+                // Once a sequence exists, every photo added later is analyzed incrementally and
+                // appended to the review list — otherwise it would be silently excluded from export.
+                if (analysis) analyzeNewUploads();
             }
+
+            // activeCount is what Export will actually render: the reviewed sequence once Analyze
+            // has run (removed/unanalyzed photos don't count), else every staged photo.
+            function activeCount() { return analysis ? analysis.length : fileArray.length; }
 
             function refreshGating() {
                 // Disable actions whose prerequisites aren't met yet (with an inline hint) instead
@@ -196,16 +215,35 @@ async def serve_interface():
                 const ab = document.getElementById("analyzeBtn");
                 const cb = document.getElementById("compileBtn");
                 if (ab) ab.disabled = !has;
-                if (cb) cb.disabled = !has;
+                if (cb) cb.disabled = activeCount() === 0;
                 const st = document.getElementById("analysisStatus");
                 if (st && !analysis) st.textContent = has
                     ? "Ready to analyze " + fileArray.length + " photo(s)."
                     : "Add at least one photo in Step 1 to enable analysis.";
                 const hint = document.getElementById("compileHint");
-                if (hint) hint.textContent = !has
+                if (hint) hint.textContent = activeCount() === 0
                     ? "Add photos in Step 1 to enable export."
-                    : (analysis ? "Exports your reviewed sequence."
+                    : (analysis ? "Exports your reviewed sequence (" + analysis.length + " image(s))."
                                 : "Ready to export. Run Analyze (Step 3) first for grounded copy & ordering.");
+            }
+
+            function removeItem(uid) {
+                const entry = fileArray.find(f => f.uid === uid);
+                if (!entry) return;
+                // Removal is one-way within the session (the underlying file on disk is untouched),
+                // so a confirm gate keeps it discoverable-but-deliberate.
+                if (!confirm('Remove "' + entry.file.name + '" from this session?\\n\\nIt will be excluded from analysis and export. The file on your computer is not affected.')) return;
+                try { URL.revokeObjectURL(entry.url); } catch (e) {}
+                fileArray = fileArray.filter(f => f.uid !== uid);
+                const card = document.getElementById("card_" + uid);
+                if (card) card.remove();
+                if (analysis) {
+                    analysis = analysis.filter(a => a.uid !== uid);
+                    renderReview();
+                    document.getElementById("analysisStatus").textContent =
+                        "Removed " + entry.file.name + " — sequence now has " + analysis.length + " image(s).";
+                }
+                refreshGating();
             }
 
             // Mirrors lifecycle_taxonomy.STATE_LABELS + ambiguous_mixed (frontend copy of the
@@ -236,38 +274,72 @@ async def serve_interface():
                 });
             }
 
+            function postAnalysisForm(entries) {
+                // entries = the exact [{file, uid}] list being analyzed, in post order.
+                const formData = new FormData();
+                entries.forEach(e => formData.append("files", e.file));
+                formData.append("event_context", document.getElementById("copyContext").value);
+                formData.append("generate_copy", document.getElementById("genCopy").checked ? "true" : "false");
+                return fetch('/analyze-sequence/', { method: 'POST', body: formData });
+            }
+
+            function bindAnalysisRow(a, uploaded) {
+                // Bind each row to its stable client uid (via upload_index) so copy AND preview
+                // follow the image through any reorder — never basename/row index. upload_index
+                // indexes into `uploaded` (the list actually posted), not fileArray at large.
+                const src = uploaded[a.upload_index];
+                return {
+                    image_ref: a.image_ref,
+                    uid: src ? src.uid : null,
+                    state_label: a.state_label,
+                    state_confidence: a.state_confidence,
+                    sequence_confidence: a.sequence_confidence,
+                    review_required: a.review_required,
+                    ambiguity_flags: a.ambiguity_flags || [],
+                    ordering_rationale: a.ordering_rationale || "",
+                    phase_summary: a.phase_summary || "",
+                    event_context: a.event_context || "",
+                    kicker: (a.copy && a.copy.kicker) || "",
+                    headline: (a.copy && a.copy.headline) || "",
+                    sub: (a.copy && a.copy.sub) || ""
+                };
+            }
+
+            async function analyzeNewUploads() {
+                // Incremental path: analyze ONLY photos not yet in the sequence and append them
+                // (flag order/near-dup context isn't recomputed across old+new — the operator
+                // repositions arrivals manually; existing rows and edits are never touched).
+                const pending = fileArray.filter(f => !analysis.some(a => a.uid === f.uid));
+                if (pending.length === 0) return;
+                const status = document.getElementById("analysisStatus");
+                status.textContent = "Analyzing " + pending.length + " new image(s)…";
+                try {
+                    const response = await postAnalysisForm(pending);
+                    if (!response.ok) throw new Error("HTTP " + response.status);
+                    const result = await response.json();
+                    analysis = analysis.concat((result.analyses || []).map(a => bindAnalysisRow(a, pending)));
+                    status.textContent = "Added " + pending.length + " image(s) to the end of the sequence — "
+                        + analysis.length + " total. Use the arrows to reposition them.";
+                    renderReview();
+                    refreshGating();
+                } catch (e) {
+                    // Staged-but-unanalyzed photos are excluded from export (see executeCompilation),
+                    // so the sequence stays consistent; retry re-scans everything still pending.
+                    status.innerHTML = "Analysis failed for " + pending.length + " new image(s) — "
+                        + "they stay staged but are excluded from export until analyzed. "
+                        + '<button type="button" onclick="analyzeNewUploads()" class="underline text-red-400 hover:text-red-300">Retry</button>';
+                    refreshGating();
+                }
+            }
+
             async function analyzeSequence() {
                 if (fileArray.length === 0) { alert("Add at least one photo in Step 1 first."); return; }
                 const status = document.getElementById("analysisStatus");
                 status.textContent = "Analyzing " + fileArray.length + " image(s)…";
-                const formData = new FormData();
-                for (let i = 0; i < fileArray.length; i++) formData.append("files", fileArray[i].file);
-                formData.append("event_context", document.getElementById("copyContext").value);
-                formData.append("generate_copy", document.getElementById("genCopy").checked ? "true" : "false");
                 try {
-                    const response = await fetch('/analyze-sequence/', { method: 'POST', body: formData });
+                    const response = await postAnalysisForm(fileArray);
                     const result = await response.json();
-                    analysis = (result.analyses || []).map(a => {
-                        // Bind each row to its stable client uid (via upload_index) so copy AND
-                        // preview follow the image through any reorder — never basename/row index.
-                        const src = fileArray[a.upload_index];
-                        return {
-                            image_ref: a.image_ref,
-                            upload_index: a.upload_index,
-                            uid: src ? src.uid : null,
-                            state_label: a.state_label,
-                            state_confidence: a.state_confidence,
-                            sequence_confidence: a.sequence_confidence,
-                            review_required: a.review_required,
-                            ambiguity_flags: a.ambiguity_flags || [],
-                            ordering_rationale: a.ordering_rationale || "",
-                            phase_summary: a.phase_summary || "",
-                            event_context: a.event_context || "",
-                            kicker: (a.copy && a.copy.kicker) || "",
-                            headline: (a.copy && a.copy.headline) || "",
-                            sub: (a.copy && a.copy.sub) || ""
-                        };
-                    });
+                    analysis = (result.analyses || []).map(a => bindAnalysisRow(a, fileArray));
                     // Single source of truth: carry any copy the operator already typed in the
                     // upload cards into the matching review item by uid, then lock the upload cards
                     // so the Review panel becomes the only copy surface.
@@ -317,6 +389,7 @@ async def serve_interface():
                             <span class="text-xs font-mono bg-red-600/20 text-red-400 px-2 py-1 rounded">#${i + 1}</span>
                             <span class="text-xs text-zinc-300 font-mono truncate flex-1">${esc(a.image_ref)}</span>
                             <select onchange="updateField(${i},'state_label',this.value)" class="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-white">${opts}</select>
+                            <button type="button" onclick="removeItem('${a.uid}')" class="text-xs text-zinc-500 hover:text-red-400 underline shrink-0">Remove</button>
                         </div>
                         <div class="flex items-center gap-4 text-[11px]">
                             <span class="text-zinc-500">state <span class="${confColor(a.state_confidence)} font-mono">${a.state_confidence.toFixed(2)}</span></span>
@@ -346,15 +419,20 @@ async def serve_interface():
 
             async function executeCompilation() {  // reason: was invalid Python-style syntax, broke compile button in browser
                 if (fileArray.length === 0) { alert("Add at least one photo in Step 1 first."); return; }
+                // Once analyzed, the sequence is canonical: only upload files whose uid is in it.
+                // This excludes staged-but-unanalyzed photos (e.g. a failed incremental add) so the
+                // export always matches exactly what the Review panel shows.
+                const activeFiles = analysis ? fileArray.filter(f => analysis.some(a => a.uid === f.uid)) : fileArray;
+                if (activeFiles.length === 0) { alert("Nothing to export — the sequence is empty. Add photos first."); return; }
 
                 const formData = new FormData();
                 formData.append("output_name", document.getElementsByName("output_name")[0].value);
-                // Files AND their uids go in the SAME fileArray order, so the server can zip them
+                // Files AND their uids go in the SAME order, so the server can zip them
                 // into a uid->path map and join by uid — never basename, never row index.
                 const uids = [];
-                for (let i = 0; i < fileArray.length; i++) {
-                    formData.append("files", fileArray[i].file);
-                    uids.push(fileArray[i].uid);
+                for (let i = 0; i < activeFiles.length; i++) {
+                    formData.append("files", activeFiles[i].file);
+                    uids.push(activeFiles[i].uid);
                 }
                 formData.append("upload_uids", JSON.stringify(uids));
 
