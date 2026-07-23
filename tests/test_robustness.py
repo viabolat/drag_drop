@@ -77,3 +77,8 @@ def test_ffmpeg_missing_still_returns_success_response(client, mock_ffmpeg_missi
         files=files,
     )
     assert response.status_code == 200
+    message = response.json()["message"]
+    # R9: the response must not name an mp4 path that was never written.
+    assert "test_output_no_ffmpeg.mp4" not in message
+    assert "test_output_no_ffmpeg.pdf" in message
+    assert "MP4 not produced" in message

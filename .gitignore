@@ -1,6 +1,13 @@
+# Per-installation brand config — never commit (client colors/logo/contact details).
+# theme.py loads brands/<name>.json via ACTIVE_BRAND (or any path via BRAND_CONFIG).
+# The schema template is tracked so a new install has something to copy from.
+brands/*.json
+!brands/_example.json.template
+
 # Secrets and sensitive data — never commit
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.p12
@@ -21,12 +28,10 @@ venv/
 
 # Node
 node_modules/
-package-lock.json
 
 # Generated render artifacts and outputs
 outputs/
 temp_uploads/
-citiview_project_lean_outputs/
 __ui_slide_*.jpg
 *.mp4
 *.pdf

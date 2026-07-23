@@ -6,35 +6,40 @@ import tempfile
 
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
+from theme import THEME
+
 # ---------------------------------------------------------------------------
-# Canvas + brand palette (bundled brand system — do not swap for network assets)
+# Canvas + brand palette. Brand values come from theme.py (neutral placeholder defaults,
+# optionally overridden by the active brand file — brands/<name>.json via ACTIVE_BRAND, or any
+# path via BRAND_CONFIG) — rebound to the historical module-level names so every draw call
+# and external import (tests, app.py) keeps working unchanged.
 # ---------------------------------------------------------------------------
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1350
-ACCENT_RED = (225, 29, 42)
-PURE_WHITE = (255, 255, 255)
-SILVER_TEXT = (192, 192, 192)
-STAMP_TEXT = (210, 214, 220)
-DIM_TEXT = (120, 124, 130)
-SHEAR = 0.16  # forward italic shear (tops lean right), applied to headline text
+ACCENT_RED = THEME.accent_rgb
+PURE_WHITE = THEME.pure_white
+SILVER_TEXT = THEME.silver_text
+STAMP_TEXT = THEME.stamp_text
+DIM_TEXT = THEME.dim_text
+SHEAR = THEME.shear  # forward italic shear (tops lean right), applied to headline text
 
-# reason: fonts + logo are bundled in-repo under assets/; anchored to this file's directory so
-# the render works regardless of the process CWD (server, tests, or a one-off script).
+# reason: fonts + logo are bundled in-repo under assets/ (theme defaults anchor to this file's
+# directory), so the render works regardless of the process CWD (server, tests, or a script).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
-DISPLAY_FONT_PATH = os.path.join(ASSETS_DIR, "SairaCondensed-Bold.ttf")  # condensed display face
-BODY_FONT_PATH = os.path.join(ASSETS_DIR, "Barlow-Regular.ttf")
-LOGO_PATH = os.path.join(ASSETS_DIR, "logo_cn_white.png")
-LOGO_HEIGHT = 96  # measured from reference: logo ink ~96px tall at pad (60, 52) from top-left
+DISPLAY_FONT_PATH = THEME.display_font_path  # condensed display face
+BODY_FONT_PATH = THEME.body_font_path
+LOGO_PATH = THEME.logo_path
+LOGO_HEIGHT = THEME.logo_height  # measured from reference: logo ink ~96px tall at pad (60, 52)
 
 # Final deliverables land under outputs/<base>/ — never the project root.
 OUTPUT_ROOT = os.path.join(BASE_DIR, "outputs")
 
-# End-card brand copy (constants — no theming layer, per repo convention).
-TAGLINE_1 = "FULL EVENT PRODUCTION · LIGHTING · STAGING"
-TAGLINE_2 = "SOUND · VIDEO · STREAMING"
-CONTACT_URL = "CitiViewAV.com"
-CONTACT_PHONE = "212-632-5196"
+# End-card brand copy (from the active theme).
+TAGLINE_1 = THEME.tagline_1
+TAGLINE_2 = THEME.tagline_2
+CONTACT_URL = THEME.contact_url
+CONTACT_PHONE = THEME.contact_phone
 
 # Neutral house grade + crop — mild by default (the tool has no per-event look), but every
 # slide dict may override via optional "grade"/"crop" keys without breaking the contract.
@@ -56,9 +61,11 @@ def build_output_paths(output_base_name):
 
     The base name is reduced to a bare filename (no traversal) and the folder is created.
     """
-    base = os.path.basename(str(output_base_name)).strip()
+    # reason: None (the render_post_package default) must fall through to the theme's base
+    # name, not stringify to "None".
+    base = os.path.basename(str(output_base_name or "")).strip()
     if not base or base in (".", ".."):
-        base = "citiview_social_post"
+        base = THEME.default_output_base
     try:
         os.mkdir(OUTPUT_ROOT)
     except FileExistsError:
@@ -357,7 +364,7 @@ def _compose_slide(img, slide, idx, count, logo, stamp, enable_fader, fonts):
     if logo:
         base.alpha_composite(logo, (60, 52))  # measured reference logo origin
     else:
-        ImageDraw.Draw(base).text((60, 60), "CITIVIEW AV", fill=PURE_WHITE, font=fonts["sub"])
+        ImageDraw.Draw(base).text((60, 60), THEME.brand_short, fill=PURE_WHITE, font=fonts["sub"])
     # Top-right location stamp on every slide: line1 from slide["location"], line2 from an
     # optional slide["tagline"] — each falling back to the event-level `stamp` tuple. Sourced
     # from the LOCATION field, never slide["sub"] (that is the bottom-left ethos line).
@@ -395,7 +402,7 @@ def _build_endcard(bg_img, logo_full, footer, fonts):
         base.alpha_composite(logo, (cx - lw // 2, logo_y))
         rule_y = logo_y + logo_h + 24
     else:
-        layer, xpad = _render_line("CITIVIEW AUDIO VISUAL", fonts["display"], PURE_WHITE, shear=SHEAR)
+        layer, xpad = _render_line(THEME.brand_full, fonts["display"], PURE_WHITE, shear=SHEAR)
         base.alpha_composite(layer, (cx - layer.width // 2 - xpad, 470))
         rule_y = 560
     d.rectangle([(cx - 75, rule_y), (cx + 75, rule_y + 6)], fill=ACCENT_RED)
@@ -430,9 +437,10 @@ def _build_pdf(frame_paths, out_path):
 
 
 def _build_mp4(frame_paths, out_path, hold=HOLD_SECONDS, xfade=XFADE_SECONDS, fps=FPS, crf=CRF):
+    """Returns True if the MP4 was produced, False otherwise (ffmpeg missing or failed)."""
     if shutil.which("ffmpeg") is None:
         print("System Notice: ffmpeg not found on PATH; MP4 not produced.")
-        return
+        return False
     n = len(frame_paths)
     inputs = []
     for p in frame_paths:
@@ -459,21 +467,25 @@ def _build_mp4(frame_paths, out_path, hold=HOLD_SECONDS, xfade=XFADE_SECONDS, fp
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     except FileNotFoundError:
         print("System Notice: ffmpeg not found on PATH; MP4 not produced.")
+        return False
     except subprocess.CalledProcessError as exc:
         print(f"System Notice: ffmpeg render failed (exit {exc.returncode}); MP4 not produced.")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def render_post_package(slides_dataset, output_base_name="citiview_social_post",
+def render_post_package(slides_dataset, output_base_name=None,
                         stamp=None, footer=None, enable_fader=True):
     """Render a slide deck to outputs/<base>/<base>.pdf and .mp4.
 
     slides_dataset: list of {path, kicker, headline, sub} dicts (each may optionally carry
     a "grade" or "crop" override dict). `stamp` is an optional (line1, line2) top-right
     corner stamp; `footer` an optional end-card footer — both omitted when not provided.
-    Returns {"mp4", "pdf"} absolute paths, or None if no slide image was usable.
+    Returns {"mp4", "pdf"} absolute paths ("mp4" is None when ffmpeg is missing or failed —
+    R9: never report a deliverable that was not written), or None if no slide image was usable.
     """
     out_dir, pdf_path, mp4_path = build_output_paths(output_base_name)
     logo = load_logo()
@@ -493,7 +505,7 @@ def render_post_package(slides_dataset, output_base_name="citiview_social_post",
 
     # reason: temp frames live in an auto-deleted dir (not the project root), so a crash
     # mid-render never leaves orphaned artifacts and deliverables stay isolated.
-    with tempfile.TemporaryDirectory(prefix="cvav_render_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="campaign_render_") as tmpdir:
         frame_paths = []
         last_bg = None
         for idx, slide in enumerate(slides_dataset):
@@ -521,6 +533,8 @@ def render_post_package(slides_dataset, output_base_name="citiview_social_post",
         frame_paths.append(efp)
 
         _build_pdf(frame_paths, pdf_path)
-        _build_mp4(frame_paths, mp4_path)
+        mp4_ok = _build_mp4(frame_paths, mp4_path)
 
-    return {"mp4": mp4_path, "pdf": pdf_path}
+    # reason: R9 — the mp4 path was previously returned even when _build_mp4 bailed
+    # (ffmpeg missing/failed), so clients received a path to a file that doesn't exist.
+    return {"mp4": mp4_path if mp4_ok else None, "pdf": pdf_path}

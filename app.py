@@ -3,14 +3,20 @@ import re
 import json
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import shutil
 from compositor import render_post_package
 from image_analysis import analyze_and_sequence, compute_scale_frac
 from context_generation import refine_copy
 from vision_provider import ClaudeVisionAnalyzer
+from theme import THEME
 
 app = FastAPI()
+# reason: Tailwind is a committed static snapshot (static/tailwind.css), not the CDN — the UI
+# must load with zero network access; regen via `make css` after editing classes in this file.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 UPLOAD_DIR = "./temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -19,6 +25,43 @@ def get_vision_analyzer():
     """Factory for the vision analyzer. Isolated so tests patch app.get_vision_analyzer to a
     DictVisionAnalyzer — the real Claude/node path is never invoked in the suite."""
     return ClaudeVisionAnalyzer()
+
+
+def preflight_report():
+    """Inspect optional runtime dependencies. Pure inspection — every feature already degrades
+    gracefully without them; this only surfaces the degradation at startup instead of at export."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    ffmpeg = shutil.which("ffmpeg") is not None
+    node = shutil.which("node") is not None
+    agent_sdk = os.path.isdir(os.path.join(base_dir, "node_modules", "@anthropic-ai", "claude-agent-sdk"))
+    token = bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+    warnings = []
+    if not ffmpeg:
+        warnings.append("MP4 export unavailable — ffmpeg is not on PATH (PDF export still works).")
+    if not node:
+        warnings.append("AI copy & vision run in MOCK mode — node is not on PATH.")
+    elif not agent_sdk:
+        warnings.append("AI copy & vision run in MOCK mode — run `npm install` (agent SDK missing).")
+    elif not token:
+        warnings.append("AI copy & vision run in MOCK mode — set CLAUDE_CODE_OAUTH_TOKEN in .env "
+                        "(generate via `claude setup-token`).")
+    return {"ffmpeg": ffmpeg, "node": node, "agent_sdk": agent_sdk, "token": token,
+            "warnings": warnings}
+
+
+def print_preflight():
+    report = preflight_report()
+    for key in ("ffmpeg", "node", "agent_sdk", "token"):
+        print(f"[doctor] {key}: {'ok' if report[key] else 'MISSING'}")
+    for w in report["warnings"]:
+        print(f"[doctor] warning: {w}")
+    if not report["warnings"]:
+        print("[doctor] all optional dependencies available — full feature set enabled")
+
+
+@app.get("/health")
+def health():
+    return preflight_report()
 
 
 _SAFE_PREFIX_RE = re.compile(r"[^A-Za-z0-9_-]")
@@ -65,20 +108,24 @@ def _remove_upload(path: str) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_interface():
-    return """
+    # reason: the page is a plain triple-quoted string (full of JS braces — never convert to an
+    # f-string); brand chrome is injected via sentinel tokens from the active theme.
+    html = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>CitiView AV — Post Production Engine</title>
-        <script src="https://cdn.tailwindcss.com"></script>
+        <title>{{BRAND_TITLE}}</title>
+        <link rel="stylesheet" href="/static/tailwind.css">
     </head>
     <body class="bg-zinc-950 text-zinc-100 min-h-screen p-8 font-sans">
         <div class="max-w-4xl mx-auto space-y-8">
             <header class="border-b border-zinc-800 pb-4">
-                <h1 class="text-2xl font-bold tracking-tight">CITIVIEW AV — CAMPAIGN STUDIO</h1>
-                <p class="text-zinc-400 text-sm mt-1">Automated Multi-Format Brand Material Compiler</p>
+                <h1 class="text-2xl font-bold tracking-tight">{{BRAND_HEADING}}</h1>
+                <p class="text-zinc-400 text-sm mt-1">{{BRAND_SUBTITLE}}</p>
             </header>
+
+            <div id="doctorBanners" class="space-y-2"></div>
 
             <form id="uploadForm" enctype="multipart/form-data" class="space-y-6">
                 <!-- Step 1 — Add photos (nothing depends on files until they exist, so this comes first) -->
@@ -98,7 +145,7 @@ async def serve_interface():
                     <div class="grid grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs text-zinc-400 mb-1">Output File Base Name <span class="text-red-500">*</span></label>
-                            <input type="text" name="output_name" value="citiview_post" required class="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-red-500">
+                            <input type="text" name="output_name" value="{{DEFAULT_OUTPUT_NAME}}" required class="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-red-500">
                         </div>
                     </div>
                     <div>
@@ -171,6 +218,30 @@ async def serve_interface():
                 fileArray.forEach(f => { try { URL.revokeObjectURL(f.url); } catch (e) {} });
             }
             window.addEventListener('beforeunload', clearObjectUrls);
+
+            // Preflight doctor: surface degraded features (no ffmpeg / mock AI) at page load
+            // instead of letting the operator discover them at export time.
+            (async function showDoctorBanners() {
+                try {
+                    const resp = await fetch('/health');
+                    if (!resp.ok) return;
+                    const report = await resp.json();
+                    const container = document.getElementById('doctorBanners');
+                    (report.warnings || []).forEach(text => {
+                        const banner = document.createElement('div');
+                        banner.className = 'flex items-start justify-between gap-4 bg-amber-950 border border-amber-700 text-amber-200 text-xs rounded-lg px-4 py-3';
+                        const msg = document.createElement('span');
+                        msg.textContent = text;
+                        const close = document.createElement('button');
+                        close.type = 'button';
+                        close.className = 'text-amber-400 hover:text-amber-200 font-bold shrink-0';
+                        close.textContent = '✕';
+                        close.addEventListener('click', () => banner.remove());
+                        banner.append(msg, close);
+                        container.appendChild(banner);
+                    });
+                } catch (e) { /* doctor is advisory only — never block the UI */ }
+            })();
 
             function handleFiles(files) {
                 if (!files || files.length === 0) return;
@@ -471,6 +542,11 @@ async def serve_interface():
     </body>
     </html>
     """
+    return (html
+            .replace("{{BRAND_TITLE}}", THEME.ui_title)
+            .replace("{{BRAND_HEADING}}", THEME.ui_heading)
+            .replace("{{BRAND_SUBTITLE}}", THEME.ui_subtitle)
+            .replace("{{DEFAULT_OUTPUT_NAME}}", THEME.ui_default_output_name))
 
 @app.post("/analyze-sequence/")
 async def analyze_sequence(
@@ -635,10 +711,18 @@ async def generate_post(
     if not outputs:
         raise HTTPException(status_code=500, detail="Render generation fault.")
 
+    if outputs["mp4"] is None:
+        # reason: R9 — never name an mp4 path that was not written (ffmpeg missing/failed).
+        message = (f"PDF generated inside working directory: {outputs['pdf']}. "
+                   "MP4 not produced — ffmpeg missing or failed (check it is installed and on PATH).")
+    else:
+        message = f"Assets generated inside working directory: {outputs['mp4']} and {outputs['pdf']}"
+
     return {
         "status": "Success",
-        "message": f"Assets generated inside working directory: {outputs['mp4']} and {outputs['pdf']}"
+        "message": message
     }
 
 if __name__ == "__main__":
+    print_preflight()
     uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -15,6 +15,18 @@ OUTPUT_GLOBS = ("test_output*.pdf", "test_output*.mp4", "__ui_slide_*.jpg", "ui_
 OUTPUT_DIR_GLOB = os.path.join("outputs", "test_output*")
 
 
+@pytest.fixture(autouse=True)
+def neutral_brand_env(monkeypatch):
+    """Scrub brand selection from the environment for every test.
+
+    reason: theme.load_theme() reads ACTIVE_BRAND/BRAND_CONFIG (and theme.py loads .env), so a
+    developer with either set in their shell or .env would otherwise run the suite against a
+    different brand than CI does. Tests that need a brand active set it themselves.
+    """
+    monkeypatch.delenv("ACTIVE_BRAND", raising=False)
+    monkeypatch.delenv("BRAND_CONFIG", raising=False)
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
@@ -37,11 +49,17 @@ def make_jpeg_bytes():
 
 @pytest.fixture
 def mock_ffmpeg_success(mocker):
+    # reason: R9 fix made _build_mp4's result depend on shutil.which — patch it too so the
+    # success path is hermetic on machines without ffmpeg installed (e.g. CI runners).
+    mocker.patch("compositor.shutil.which", return_value="/usr/bin/ffmpeg")
     return mocker.patch("compositor.subprocess.run", return_value=None)
 
 
 @pytest.fixture
 def mock_ffmpeg_missing(mocker):
+    # reason: which() -> None is the deterministic "not installed" signal on every machine;
+    # the subprocess patch stays as a guard so a real ffmpeg can never run under this fixture.
+    mocker.patch("compositor.shutil.which", return_value=None)
     return mocker.patch("compositor.subprocess.run", side_effect=FileNotFoundError)
 
 
@@ -125,4 +143,9 @@ def cleanup_artifacts():
     for path in glob.glob(OUTPUT_DIR_GLOB):
         shutil.rmtree(path, ignore_errors=True)
     for name in os.listdir(UPLOAD_DIR):
-        os.remove(os.path.join(UPLOAD_DIR, name))
+        path = os.path.join(UPLOAD_DIR, name)
+        # reason: uploads land in per-upload subdirs; os.remove on a dir raises IsADirectoryError.
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            os.remove(path)

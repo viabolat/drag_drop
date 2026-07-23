@@ -1,4 +1,4 @@
-// generate_slide_copy.mjs — CitiView AV slide-copy generation via the Claude Agent SDK,
+// generate_slide_copy.mjs — slide-copy generation via the Claude Agent SDK,
 // authenticated with a Claude Code subscription token (CLAUDE_CODE_OAUTH_TOKEN), not a
 // metered Anthropic API key. Invoked as a one-shot subprocess from text_generation.py —
 // mirrors how compositor.py already shells out to ffmpeg per render, adapted from the
@@ -12,9 +12,15 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 const MODEL = 'haiku'; // model alias — subscription channel resolves to the current Haiku release
 
-const SYSTEM_PROMPT = `You are CitiView AV's social media copywriter. CitiView AV is an event \
-audio-visual production company (full event production, lighting, staging, sound, video, \
-streaming). Given a short description of an event and how many slides a post needs, write \
+// Brand identity is injected by text_generation.py from the active theme (theme.py); the
+// fallbacks mirror theme.Theme's neutral defaults, so running this bridge standalone (no env)
+// produces unbranded copy rather than some past client's identity.
+const BRAND_NAME = process.env.BRAND_NAME || 'Your Brand';
+const BRAND_DESCRIPTION = process.env.BRAND_DESCRIPTION || 'a business that produces branded \
+event/social recap content';
+
+const SYSTEM_PROMPT = `You are ${BRAND_NAME}'s social media copywriter. ${BRAND_NAME} is \
+${BRAND_DESCRIPTION}. Given a short description of an event and how many slides a post needs, write \
 punchy, on-brand slide copy for a portrait social video/PDF deck.
 
 For each slide, produce:

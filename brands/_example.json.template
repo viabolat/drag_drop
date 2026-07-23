@@ -1,0 +1,31 @@
+{
+    "accent_rgb": [225, 29, 42],
+    "pure_white": [255, 255, 255],
+    "silver_text": [192, 192, 192],
+    "stamp_text": [210, 214, 220],
+    "dim_text": [120, 124, 130],
+    "shear": 0.16,
+
+    "display_font_path": "assets/SairaCondensed-Bold.ttf",
+    "body_font_path": "assets/Barlow-Regular.ttf",
+    "logo_path": "assets/your_logo_white.png",
+    "logo_height": 96,
+
+    "tagline_1": "YOUR TAGLINE HERE",
+    "tagline_2": "YOUR SECOND LINE HERE",
+    "contact_url": "yourwebsite.com",
+    "contact_phone": "555-555-5555",
+
+    "brand_short": "YOUR BRAND",
+    "brand_full": "YOUR BRAND NAME",
+
+    "default_output_base": "social_post",
+
+    "ui_title": "Campaign Studio — Post Production Engine",
+    "ui_heading": "CAMPAIGN STUDIO",
+    "ui_subtitle": "Automated Multi-Format Brand Material Compiler",
+    "ui_default_output_name": "post",
+
+    "brand_name": "Your Brand",
+    "brand_description": "a business that produces branded event/social recap content"
+}

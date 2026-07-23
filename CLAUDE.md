@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A single-operator local web tool ("CitiView AV — Campaign Studio") that turns a batch of event photos into
+A single-operator local web tool ("Campaign Studio") that turns a batch of event photos into
 branded social media assets: a portrait MP4 slideshow and a matching PDF deck. There is no database, no
 auth, and no persistence beyond the generated output files — see `docs/spec.md` for the full feature
 spec and known open questions/bugs, and `docs/LOGIC_GUIDE.md` for the decision log.
@@ -12,15 +12,24 @@ spec and known open questions/bugs, and `docs/LOGIC_GUIDE.md` for the decision l
 ## Commands
 
 ```bash
-pip install -r requirements.txt   # deps: fastapi, uvicorn, Pillow, numpy, python-multipart, python-dotenv
-npm install                        # deps: @anthropic-ai/claude-agent-sdk (Node; slide-copy + image analysis)
-python app.py                      # serves the UI + API at http://127.0.0.1:8000
-.venv/bin/python -m pytest -v      # run the test suite (92 tests, tests/ + pytest.ini)
+./run.sh                                        # one-command bootstrap + launch (venv, pip, npm, .env, doctor, :8000)
+make test                                       # bootstrap test deps + run the suite (108 tests; hermetic)
+make doctor                                     # report optional runtime deps (ffmpeg / node / agent SDK / token)
+make css                                        # regenerate static/tailwind.css after editing classes in app.py
 ```
 
+Manual equivalents (what run.sh does): `python3 -m venv .venv` (Python 3.12, see `.python-version`),
+`.venv/bin/pip install -r requirements-dev.txt`, `npm install`, `cp .env.example .env`,
+`.venv/bin/python app.py`, `.venv/bin/python -m pytest -v`.
+
+`requirements.txt` (runtime) and `requirements-dev.txt` (adds test deps) are **pinned** — bump versions
+deliberately and re-run the suite; never loosen back to `>=` ranges. CI (`.github/workflows/ci.yml`)
+runs the suite + a syntax check of the `.mjs` bridges on every push/PR.
+
 `ffmpeg` must be installed and on `PATH` for MP4 generation — it is invoked via `subprocess`, not pip, and
-is **not** listed in `requirements.txt`. If missing, `compositor.render_post_package` catches
-`FileNotFoundError`, logs a notice, and still returns an `mp4` path that doesn't exist on disk.
+is **not** listed in `requirements.txt`. If missing (or if ffmpeg fails), `compositor._build_mp4` reports
+failure, `render_post_package` returns `"mp4": None`, and the `/generate-post/` response says
+"MP4 not produced" — the PDF is still delivered (R9, resolved).
 
 Fonts (`SairaCondensed-Bold.ttf`, `Barlow-Regular.ttf`) and the brand logo (`logo_cn_white.png`) are
 bundled in `assets/` (referenced via `compositor.ASSETS_DIR`) — there is no runtime network
@@ -93,11 +102,17 @@ backoff with jitter, sequential — never parallel), never a crash.
 
 ## Architecture
 
-Four-file pipeline (three Python, one Node), no framework beyond FastAPI for routing:
+Four-file pipeline (three Python, one Node) plus the small `theme.py` brand seam, no framework
+beyond FastAPI for routing:
 
-- **`app.py`** — FastAPI app with three routes:
-  - `GET /` returns a single self-contained HTML page (Tailwind via CDN, no build step) with inline
-    vanilla JS for the drag-and-drop UI, laid out as a numbered 5-step flow (Add photos → Event
+- **`app.py`** — FastAPI app with four routes (plus a `/static` mount for the vendored Tailwind
+  snapshot — regen with `make css` after editing classes; the page loads with zero network access):
+  - `GET /health` returns the preflight doctor report (`ffmpeg`/`node`/`agent_sdk`/`token` presence
+    + human-readable `warnings`). Pure inspection — degradation behavior is unchanged. The UI fetches
+    it on load and shows dismissible banners; `print_preflight()` prints the same at startup.
+  - `GET /` returns a single self-contained HTML page (no build step; brand chrome injected from
+    `theme.py` via `{{TOKEN}}` sentinel replacement — the HTML is a plain string, never an f-string)
+    with inline vanilla JS for the drag-and-drop UI, laid out as a numbered 5-step flow (Add photos → Event
     details → Analyze & Sequence → Review → Export). Each uploaded file gets a stable client `uid`, a
     thumbnail preview, a confirm-gated **Remove photo** control, and three free-text fields (`kicker`,
     `headline`, `sub`) that map 1:1 to slide overlay text. The Review panel adds per-row **Remove**
@@ -132,7 +147,7 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
   - The last slide's image is reused (blurred + darkened) to auto-generate an outro/end card with a
     fixed tagline and contact info — there's no way to opt out of the end card per-run.
   - Slides are written as numbered JPEGs (`slide_{idx:03d}.jpg`, `slide_end.jpg`) inside an
-    auto-deleted `tempfile.TemporaryDirectory(prefix="cvav_render_")`, combined into the PDF via
+    auto-deleted `tempfile.TemporaryDirectory(prefix="campaign_render_")`, combined into the PDF via
     `Pillow`'s multi-page save and into the MP4 via a chained `ffmpeg -filter_complex xfade` graph
     (crossfades, not hard cuts) shelled out through `subprocess`. Because the frames live in a temp
     dir, a crash mid-render leaves **no** orphaned artifacts. Final deliverables land under
@@ -165,9 +180,20 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
 
 ## Conventions specific to this repo
 
-- Brand constants (`ACCENT_RED`, `PURE_WHITE`, `SILVER_TEXT`, canvas size, shear factor, scrim height,
-  logo size) are hardcoded at the top of `compositor.py` — there is no config file or theming layer.
-  Changing the visual brand means editing these constants and the draw calls directly.
+- Brand values live in **`theme.py`** (a frozen `Theme` dataclass whose defaults are a *neutral,
+  unbranded placeholder*, optionally overridden by the single active brand file — `ACTIVE_BRAND=<name>`
+  → `brands/<name>.json`, or `BRAND_CONFIG=<path>` → that exact file, which wins if both are set;
+  either may come from the shell or `.env`, which `theme.py` loads itself so import order can't
+  swallow it. There is no repo-root `brand.json` fallback and no UI picker — one active theme per
+  installation. `brands/*.json` is gitignored per-installation config; `brands/_example.json.template`
+  is the tracked schema template. A missing/malformed file or an unknown `ACTIVE_BRAND` name logs a
+  warning and falls back to defaults, never breaks a render. The default `logo_path` is `""`, which
+  `compositor._logo_content()` treats as "no logo" — slides stamp `brand_short` text and the end card
+  renders `brand_full` instead.) `compositor.py` rebinds the historical module-level names (`ACCENT_RED`, `TAGLINE_1`,
+  `DISPLAY_FONT_PATH`, …) from `THEME`, so draw calls and external imports are unchanged; the canvas
+  size, scrim geometry, and MP4 spec stay fixed constants in `compositor.py`. `text_generation.py` /
+  `vision_provider.py` pass `BRAND_NAME`/`BRAND_DESCRIPTION` to the `.mjs` bridges via subprocess env
+  (prompt flavor only — never auth, and never touching the `ANTHROPIC_API_KEY` rejection).
 - The inline `<script>` in `app.py` is plain browser JS, not a bundled frontend — do not introduce
   `async def` (Python syntax) there; it must be `async function`.
 - Intermediate render frames now live in a per-run `tempfile.TemporaryDirectory` (unique prefix), so
@@ -181,4 +207,5 @@ Four-file pipeline (three Python, one Node), no framework beyond FastAPI for rou
   subscription billing rather than silently falling back to metered API billing — this check must
   not be removed or weakened.
 - The repo is under git with a `.gitignore` that already covers `.env`, `node_modules/`,
-  `package-lock.json`, `outputs/`, and `temp_uploads/`.
+  `outputs/`, and `temp_uploads/`. `package-lock.json` is **tracked** (reproducible Node installs)
+  and `.env.example` is the committed template for the optional token.

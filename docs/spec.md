@@ -1,7 +1,7 @@
-# Spec: CitiView AV Campaign Studio — Drag & Drop Post Compiler
+# Spec: Campaign Studio — Drag & Drop Post Compiler
 
 ## Problem Statement
-CitiView AV (event production/AV company) needs a local tool for staff to turn raw event photos into branded social media assets without manual design work in Photoshop/Premiere. A staff member should be able to drag in a batch of photos, type a kicker/headline/sub-line per photo, and receive a finished Instagram-ready video (MP4) and PDF deck with consistent branding (CitiView AV logo, red accent, sheared display type) applied automatically.
+An event production/AV company needs a local tool for staff to turn raw event photos into branded social media assets without manual design work in Photoshop/Premiere. A staff member should be able to drag in a batch of photos, type a kicker/headline/sub-line per photo, and receive a finished Instagram-ready video (MP4) and PDF deck with consistent branding (the active brand's logo, accent color, sheared display type) applied automatically.
 
 ## Success Criteria
 - User drags/drops or browses multiple images into the single-page UI (`app.py` `/` route), following a numbered 5-step flow (Add photos → Event details → Analyze & Sequence → Review → Export).
@@ -20,7 +20,7 @@ CitiView AV (event production/AV company) needs a local tool for staff to turn r
 - Cloud/metered LLM billing: the optional AI copy + vision run only on a Claude Code subscription token; the `.mjs` bridges reject `ANTHROPIC_API_KEY`. (Reordering and grounded AI copy are now in scope — see Success Criteria.)
 
 ## Known Constraints
-- **`ffmpeg` is a hard runtime dependency** invoked via `subprocess` but is not installable via pip and is absent from `requirements.txt` — must be present on `PATH` on the host, or MP4 generation silently fails (caught `FileNotFoundError`, prints a notice, still returns the (nonexistent) mp4 path to the client).
+- **`ffmpeg` is a hard runtime dependency** invoked via `subprocess` but is not installable via pip and is absent from `requirements.txt` — must be present on `PATH` on the host. If missing (or if ffmpeg fails), MP4 generation is skipped: the PDF is still delivered, `render_post_package` returns `"mp4": None`, and the API response says "MP4 not produced".
 - Rendering is fully offline: `SairaCondensed-Bold.ttf` + `Barlow-Regular.ttf` and the logo are bundled in `assets/`; `_font` falls back to the Pillow default if a face fails to load.
 - Single-process, synchronous pipeline — not designed for concurrent compile jobs. Intermediate frames live in per-run temp dirs (no shared filenames); the only shared surface is `outputs/<base>/`, which `build_output_paths` suffixes (`<base>-2`, …) to avoid clobber.
 
@@ -28,5 +28,5 @@ CitiView AV (event production/AV company) needs a local tool for staff to turn r
 - **RESOLVED** — the old `ImageStat` / `'ImageStat' in globals()` "shadow recovery" guard is gone; `compositor.py` now grades unconditionally via `DEFAULT_GRADE` + optional per-slide overrides.
 - **RESOLVED** — `executeCompilation` is a valid `async function`; the compile button works.
 - **RESOLVED** — `temp_uploads/` is gitignored and ephemeral; every run deletes its uploads (per-upload subdirs pruned by `_remove_upload`).
-- **PARTIALLY OPEN (R9)** — `ffmpeg` is now a documented prerequisite AND the app degrades (skips MP4, still delivers PDF). Still open: when ffmpeg is missing the response still names an `mp4` path that was never written.
+- **RESOLVED (R9)** — `ffmpeg` is a documented prerequisite AND the app degrades (skips MP4, still delivers PDF). `_build_mp4` now reports success/failure; `render_post_package` returns `"mp4": None` when the MP4 was not written, and the `/generate-post/` response says "MP4 not produced" instead of naming a nonexistent path (regression-tested in `tests/test_robustness.py`).
 - **RESOLVED (R7)** — the browser now only uploads files whose `uid` appears in the reviewed sequence, so the upload set and the render set can't diverge; removed photos leave both, and photos whose incremental analysis failed are excluded with an explicit status message + retry, never silently. (Server behavior is unchanged: an upload absent from `sequence_json` is still skipped — it just can no longer happen from the UI.)

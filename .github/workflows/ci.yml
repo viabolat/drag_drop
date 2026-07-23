@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      # The suite is hermetic: vision/copy seams and ffmpeg are mocked, live_vision is
+      # opt-in — no CLAUDE_CODE_OAUTH_TOKEN, node, or ffmpeg needed here.
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -v
+
+  node-bridges:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node --check analyze_image.mjs
+      - run: node --check generate_slide_copy.mjs

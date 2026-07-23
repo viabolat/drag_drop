@@ -2,8 +2,8 @@
 
 Three concerns, all pure functions that NEVER raise (return neutral/empty results on error,
 matching the never-raise contract of text_generation.py):
-  - extract_cv_signals: numpy fast path (reusing the np.asarray(img).astype(float32) idiom from
-    citiview_project_lean/engine/renderer.py), with a Pillow-only fallback at lower confidence.
+  - extract_cv_signals: numpy fast path (the np.asarray(img).astype(float32) idiom carried over
+    from the predecessor batch pipeline), with a Pillow-only fallback at lower confidence.
   - extract_metadata: EXIF DateTimeOriginal ONLY (tag 36867) — never filesystem mtime, never
     filenames. Frequently absent (PNGs carry no EXIF) — that is expected; metadata is secondary.
   - perceptual_hash / hamming: 64-bit average hash for near-duplicate detection.

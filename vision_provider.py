@@ -24,6 +24,7 @@ from PIL import Image
 
 import lifecycle_taxonomy as tax
 from analysis_schema import SignalReading
+from theme import THEME
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 NODE_SCRIPT_PATH = os.path.join(_MODULE_DIR, "analyze_image.mjs")
@@ -93,6 +94,9 @@ class ClaudeVisionAnalyzer:
                         ["node", NODE_SCRIPT_PATH, event_context or "", bounded],
                         capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SECONDS,
                         cwd=_MODULE_DIR,
+                        # Prompt flavor only — auth stays on the inherited token env.
+                        env={**os.environ, "BRAND_NAME": THEME.brand_name,
+                             "BRAND_DESCRIPTION": THEME.brand_description},
                     )
                 except FileNotFoundError:
                     return dict(MOCK_SEMANTIC)          # node not installed

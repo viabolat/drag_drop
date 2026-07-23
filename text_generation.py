@@ -5,6 +5,8 @@ import subprocess
 
 from dotenv import load_dotenv
 
+from theme import THEME
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,9 @@ def generate_slide_copy(context: str, slide_count: int) -> list[dict]:
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            # Prompt flavor only — auth stays on the inherited CLAUDE_CODE_OAUTH_TOKEN.
+            env={**os.environ, "BRAND_NAME": THEME.brand_name,
+                 "BRAND_DESCRIPTION": THEME.brand_description},
         )
         if result.returncode != 0:
             logger.warning("generate_slide_copy.mjs failed (exit %s): %s", result.returncode, result.stderr.strip())

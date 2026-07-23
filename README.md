@@ -1,4 +1,4 @@
-# CitiView AV — Campaign Studio
+# Campaign Studio
 
 Turn a batch of raw event photos into branded social assets — a portrait **MP4 slideshow** and a
 matching **PDF deck** — without opening Photoshop or Premiere. It runs entirely on your own machine.
@@ -12,8 +12,9 @@ matching **PDF deck** — without opening Photoshop or Premiere. It runs entirel
 
 A single-operator, local web tool. You drag in event photos, the tool figures out the story they
 tell (empty room → setup → live show → teardown), orders them, drafts on-brand caption text for
-each, and exports a finished 1080×1350 portrait video + PDF with the CitiView AV logo, red accent,
-and sheared display type applied automatically.
+each, and exports a finished 1080×1350 portrait video + PDF with your logo, accent color, and
+sheared display type applied automatically — whichever brand file is active, or a neutral
+placeholder brand out of the box (see [Branding](#branding-white-label)).
 
 ## Why it was made
 
@@ -85,21 +86,79 @@ you can edit every line in Step 4 — the tool never overrides what you type.
 
 ### Local setup / run
 
+One command — prerequisites are only **Python 3.12** (see `.python-version`); **Node ≥ 18** and
+**ffmpeg** are optional (features degrade gracefully without them, and the startup doctor tells
+you what's missing and how to fix it):
+
 ```bash
-pip install -r requirements.txt   # fastapi, uvicorn, Pillow, numpy, python-multipart, python-dotenv
-npm install                       # @anthropic-ai/claude-agent-sdk (Node bridges: copy + vision)
-python app.py                     # serves UI + API at http://127.0.0.1:8000
-.venv/bin/python -m pytest -v     # 92 tests
+./run.sh          # creates .venv, installs pinned deps, npm install, .env, doctor, serves :8000
 ```
 
+Equivalent manual steps and extras live in the `Makefile`: `make setup` (bootstrap only, incl.
+test deps), `make test` (full suite), `make doctor` (dependency report), `make css` (regenerate
+the vendored Tailwind snapshot after editing classes in `app.py`).
+
 - **`ffmpeg`** must be on `PATH` for MP4 output (invoked via `subprocess`; not a pip dep). If it's
-  missing, the PDF is still produced and a notice is logged.
+  missing, the PDF is still produced, the response says so, and the UI shows a banner at load.
 - **Optional AI** — set `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) in a local `.env`. It
   enables AI-drafted copy and per-image vision analysis. Without it, both degrade to a clearly
   `[MOCK]`/neutral fallback rather than failing. `node` must be on `PATH`. The `.mjs` bridges
   **reject `ANTHROPIC_API_KEY`** to keep usage on subscription billing, never metered API billing.
 - Fonts (`SairaCondensed-Bold.ttf`, `Barlow-Regular.ttf`) and the logo (`logo_cn_white.png`) are
-  bundled in `assets/` — rendering has no network dependency.
+  bundled in `assets/`, and Tailwind is a committed snapshot (`static/tailwind.css`) — the running
+  tool has **zero network dependency**, for rendering and for the page itself.
+- **`GET /health`** reports the same doctor checks as JSON (`ffmpeg`/`node`/`agent_sdk`/`token`).
+
+### Branding (white-label)
+
+`theme.py` defines the brand. Its **built-in defaults are a neutral, unbranded placeholder** — a
+fresh clone renders something sane with zero configuration (no client logo: slides fall back to the
+`brand_short` text mark, the end card to `brand_full`).
+
+Real brands live as JSON files in **`brands/`**, one per client, each overriding any subset of theme
+fields — no code edits. Exactly one is active per installation, selected by env var (shell or `.env`):
+
+| Env var | Meaning |
+|---|---|
+| `ACTIVE_BRAND=citiview` | loads `brands/citiview.json` (plain name — no paths, no `../`) |
+| `BRAND_CONFIG=/path/to/brand.json` | loads that exact file, absolute or repo-relative. **Wins if both are set.** |
+| *(neither set)* | the neutral built-in defaults |
+
+To brand a new install: `cp brands/_example.json.template brands/acme.json`, edit it, and set
+`ACTIVE_BRAND=acme` in `.env`. Colors are `[r, g, b]`; relative `*_path` values resolve against the
+repo root (not against `brands/`), so `"logo_path": "assets/logo.png"` points at the shared
+top-level `assets/`. Unknown keys are logged and ignored; a malformed file, a missing file, or an
+unknown `ACTIVE_BRAND` name logs a warning and falls back to the defaults — a bad theme can never
+break a render.
+
+`brands/*.json` is **gitignored** (per-installation config, like `.env`); only
+`brands/_example.json.template` is tracked. `brand_name`/`brand_description` only flavor the AI
+prompts — auth and billing are untouched by theming. There is deliberately no per-run/UI theme
+picker: one active theme keeps the render path deterministic.
+
+An example brand file (`brands/citiview.json`), showing every commonly overridden field:
+
+```json
+{
+    "accent_rgb": [225, 29, 42],
+    "display_font_path": "assets/SairaCondensed-Bold.ttf",
+    "body_font_path": "assets/Barlow-Regular.ttf",
+    "logo_path": "assets/logo_cn_white.png",
+    "tagline_1": "FULL EVENT PRODUCTION · LIGHTING · STAGING",
+    "tagline_2": "SOUND · VIDEO · STREAMING",
+    "contact_url": "CitiViewAV.com",
+    "contact_phone": "212-632-5196",
+    "brand_short": "CITIVIEW AV",
+    "brand_full": "CITIVIEW AUDIO VISUAL",
+    "default_output_base": "citiview_social_post",
+    "ui_title": "CitiView AV — Post Production Engine",
+    "ui_heading": "CAMPAIGN STUDIO",
+    "ui_subtitle": "Automated Multi-Format Brand Material Compiler",
+    "ui_default_output_name": "citiview_post",
+    "brand_name": "CitiView AV",
+    "brand_description": "an event audio-visual production company (full event production, lighting, staging, sound, video, streaming)"
+}
+```
 
 ### Folder map
 
@@ -107,7 +166,10 @@ python app.py                     # serves UI + API at http://127.0.0.1:8000
 .
 ├── README.md                     # this file — the entry point
 ├── CLAUDE.md                     # deeper module tour (also read by Claude Code)
-├── app.py                        # FastAPI app + inline 5-step UI  (run this)
+├── run.sh                        # one-command bootstrap + launch  (start here)
+├── Makefile                      # setup / test / doctor / css targets
+├── app.py                        # FastAPI app + inline 5-step UI + /health doctor
+├── theme.py                      # active brand (neutral defaults + brands/<name>.json)
 ├── compositor.py                 # render pipeline → outputs/<base>/<base>.{pdf,mp4}
 ├── image_analysis.py             # deterministic sequencing engine
 ├── image_signals.py              # objective CV signals + EXIF + perceptual hash
@@ -119,11 +181,12 @@ python app.py                     # serves UI + API at http://127.0.0.1:8000
 ├── text_generation.py            # copy subprocess boundary │   this dir — keep
 ├── generate_slide_copy.mjs       # Claude copy bridge      ─┘   alongside .py)
 ├── assets/                       # bundled fonts + logo
+├── brands/                       # per-install brand JSON (gitignored; template is tracked)
+├── static/                       # vendored Tailwind snapshot (regen: make css)
 ├── docs/                         # spec.md, LOGIC_GUIDE.md
 ├── tests/                        # pytest suite (conftest imports the root modules)
 ├── outputs/                      # generated deliverables (gitignored)
-├── temp_uploads/                 # ephemeral upload staging (gitignored)
-└── citiview_project_lean/        # separate config-driven batch pipeline (its own README)
+└── temp_uploads/                 # ephemeral upload staging (gitignored)
 ```
 
 Code lives flat at the repo root on purpose: `app.py`, `tests/`, and the `.mjs` subprocess bridges
@@ -144,18 +207,33 @@ build step — the UI is inline HTML + vanilla JS served by `GET /`.
 Key invariants: **filenames are never a sequencing signal**; **EXIF is only a tie-break**; **the LLM
 never chooses order** (vision emits per-image signals; deterministic Python owns sequencing).
 Files/sequence entries are joined by a stable client **`uid`** (never basename or row index), so text
-and previews survive reorder and duplicate filenames. Brand constants (colors, canvas size, logo
-size, shear) are hardcoded at the top of `compositor.py`. See **`CLAUDE.md`** for a deeper module
-tour, **`docs/spec.md`** for the feature spec, and **`docs/LOGIC_GUIDE.md`** for the decision log.
+and previews survive reorder and duplicate filenames. Brand values (colors, fonts, logo, taglines,
+contact, shear) come from `theme.py` — neutral placeholder defaults, overridden by the active brand
+file (`brands/<name>.json` via `ACTIVE_BRAND`, or any path via `BRAND_CONFIG`; see **Branding**
+above); the canvas size (1080×1350) and MP4 spec stay fixed in `compositor.py`.
+See **`CLAUDE.md`** for a deeper module tour, **`docs/spec.md`** for the feature spec, and
+**`docs/LOGIC_GUIDE.md`** for the decision log.
+
+### Clean-machine smoke checklist
+
+Run this after cloning on a fresh machine (or after dependency changes) to verify deployability:
+
+1. `./run.sh` — bootstraps everything, prints the doctor report, serves `http://127.0.0.1:8000`.
+2. Check the doctor output (and the page banner) matches the machine: ffmpeg/node/token present?
+3. `make test` — **108 passed** (hermetic: needs no token, no ffmpeg; seams are mocked).
+4. Upload 2 photos → Analyze (expect `[MOCK]`/derived copy without a token) → Compile & Export.
+5. Confirm `outputs/<name>/<name>.pdf` **and** `.mp4` exist (mp4 requires ffmpeg on PATH; without it
+   the response says "MP4 not produced" and only the PDF exists).
 
 ### Limitations / failure modes / known edge cases
 
-- **ffmpeg missing** → PDF is delivered but no MP4 (the response currently still names the mp4 path
-  that wasn't written — known risk *R9*).
+- **ffmpeg missing or failing** → PDF is still delivered; the response says "MP4 not produced" and
+  returns no mp4 path (*R9 — resolved*: the API never names a file that wasn't written).
 - **Vision unavailable** (no token / node / a transient bridge failure) → every photo is labeled
   `ambiguous_mixed` and flagged for review, and their grounded copy can look alike. Fix by editing
   copy per row in Step 4 (it binds correctly to each image).
 - **Single operator** — no auth, no persistence/history. Not built for truly concurrent compiles;
   repeat runs with the same output name are auto-suffixed (`<base>-2`, …) to avoid clobber.
-- **Silent exclusion (R7)** — an uploaded image left out of the reviewed sequence is dropped from the
-  render without a warning.
+- **Sequence exclusion (R7 — resolved in the UI)** — the browser only uploads files whose `uid` is in
+  the reviewed sequence, so the upload set and render set can't silently diverge. The server-side rule
+  is unchanged: a direct API call whose upload is absent from `sequence_json` still skips that file.

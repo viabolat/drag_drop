@@ -1,4 +1,4 @@
-// analyze_image.mjs — CitiView AV single-image lifecycle-signal extraction via the Claude
+// analyze_image.mjs — single-image lifecycle-signal extraction via the Claude
 // Agent SDK, authenticated with a Claude Code subscription token (CLAUDE_CODE_OAUTH_TOKEN),
 // NOT a metered Anthropic API key. Mirrors generate_slide_copy.mjs exactly: same auth gate,
 // hermetic single-turn query(), tolerant JSON parsing, [MOCK] fallback. Invoked one-shot per
@@ -30,8 +30,15 @@ const NUMERIC_SIGNALS = [
 ];
 const ACTIVITY_VALUES = ['none', 'crew', 'guests', 'audience', 'teardown'];
 
-const SYSTEM_PROMPT = `You are a visual analyst for CitiView AV, an event audio-visual production \
-company. You are shown ONE photograph from somewhere in an event's lifecycle (an empty venue, \
+// Brand identity is injected by vision_provider.py from the active theme (theme.py); the
+// fallbacks mirror theme.Theme's neutral defaults, so running this bridge standalone (no env)
+// carries no past client's identity into the prompt.
+const BRAND_NAME = process.env.BRAND_NAME || 'Your Brand';
+const BRAND_DESCRIPTION = process.env.BRAND_DESCRIPTION || 'a business that produces branded \
+event/social recap content';
+
+const SYSTEM_PROMPT = `You are a visual analyst for ${BRAND_NAME}, ${BRAND_DESCRIPTION}. \
+You are shown ONE photograph from somewhere in an event's lifecycle (an empty venue, \
 gear being loaded in, AV/staging being built, a finished guest-ready room, a live event in \
 progress, or a teardown/strike). Assess ONLY what is visible in THIS image. Do not guess at a \
 sequence, do not compare to other images, do not output any order or index — another system \
