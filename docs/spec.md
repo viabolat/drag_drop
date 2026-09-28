@@ -9,7 +9,7 @@ An event production/AV company needs a local tool for staff to turn raw event ph
 - `POST /generate-post/` accepts the images + either a reorder-safe `sequence_json` (joined to files by `uid`) or legacy index-aligned `metadata_json`, and `compositor.render_post_package` produces:
   - One branded 1080×1350 JPEG slide per uploaded photo (crop-to-fit, brand overlays, sheared headline, scrims + vignette).
   - An auto-generated outro/end card (blurred final photo + tagline + contact info).
-  - A single PDF containing all slides in order and a single MP4 slideshow (4s/slide, H.264, no audio) via system `ffmpeg`, written to `outputs/<base>/<base>.{pdf,mp4}`.
+  - A single PDF containing all slides in order and a single MP4 slideshow (4s/slide, H.264; optional MP3 soundtrack looped/trimmed to the video length with a fade-out, silent otherwise) via system `ffmpeg`, written to `outputs/<base>/<base>.{pdf,mp4}`.
 - Temp uploads and intermediate render frames are cleaned up after each run (no orphaned files in `temp_uploads/` or project root).
 - Runs locally via `uvicorn` on `127.0.0.1:8000`. Fonts and logo are bundled in the repo (no downloads). The only optional external calls are the Claude Agent SDK bridges (grounded copy + vision) when `CLAUDE_CODE_OAUTH_TOKEN` is set; without it they degrade to `[MOCK]`/neutral signals.
 

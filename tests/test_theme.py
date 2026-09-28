@@ -27,7 +27,7 @@ def test_active_brand_citiview_is_historical_brand(monkeypatch):
     assert t.tagline_1 == "FULL EVENT PRODUCTION · LIGHTING · STAGING"
     assert t.tagline_2 == "SOUND · VIDEO · STREAMING"
     assert t.contact_url == "CitiViewAV.com"
-    assert t.contact_phone == "212-632-5196"
+    assert t.contact_phone == "NY (212) 632-5196   CO (303) 414-2834"
     assert t.brand_short == "CITIVIEW AV"
     assert t.brand_full == "CITIVIEW AUDIO VISUAL"
     assert t.default_output_base == "citiview_social_post"

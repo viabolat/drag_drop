@@ -181,6 +181,11 @@ async def serve_interface():
 
                 <!-- Step 5 — Export -->
                 <div class="space-y-2">
+                    <label class="block text-xs text-zinc-400">Soundtrack (optional) — fitted to the video length, looped if short, faded out at the end</label>
+                    <div class="flex items-center gap-2">
+                        <input type="file" id="audioInput" accept="audio/*,.mp3" class="flex-1 text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700">
+                        <button type="button" onclick="document.getElementById('audioInput').value=''" class="text-xs text-zinc-500 hover:text-zinc-300">Clear</button>
+                    </div>
                     <button type="button" id="compileBtn" onclick="executeCompilation()" class="w-full bg-red-600 hover:bg-red-700 font-medium text-white py-3 rounded-lg transition tracking-wide text-sm disabled:opacity-40 disabled:cursor-not-allowed" disabled>
                         5. COMPILE &amp; EXPORT
                     </button>
@@ -506,6 +511,8 @@ async def serve_interface():
                     uids.push(activeFiles[i].uid);
                 }
                 formData.append("upload_uids", JSON.stringify(uids));
+                const audioFile = document.getElementById('audioInput').files[0];
+                if (audioFile) formData.append("audio", audioFile);
 
                 if (analysis) {
                     // reorder-safe path: sequence order + per-image copy, joined by uid on the server.
@@ -688,7 +695,8 @@ async def generate_post(
     metadata_json: str = Form(None),
     sequence_json: str = Form(None),
     upload_uids: str = Form(None),
-    files: list[UploadFile] = File(...)
+    files: list[UploadFile] = File(...),
+    audio: UploadFile | None = File(None),
 ):
     if not output_name or not output_name.strip():
         # reason: a blank base name collapses every run onto one output folder (clobber); require it.
@@ -701,8 +709,17 @@ async def generate_post(
             # legacy positional contract (metadata_json required when no sequence provided)
             slides_dataset = _slides_from_metadata(metadata_json, files, written_paths)
 
+        # Optional soundtrack: its own "audio" subdir so it can never collide with a photo upload.
+        audio_path = None
+        if audio is not None and audio.filename:
+            audio_path = sanitize_upload_filename(audio.filename, prefix="audio")
+            with open(audio_path, "wb") as buffer:
+                shutil.copyfileobj(audio.file, buffer)
+            written_paths.append(audio_path)
+
         # Trigger independent compositing pipeline pass execution cleanly
-        outputs = render_post_package(slides_dataset, output_base_name=output_name)
+        outputs = render_post_package(slides_dataset, output_base_name=output_name,
+                                      audio_path=audio_path)
     finally:
         # reason: must run even if metadata indexing or compositing raises, so uploads never linger
         for path in written_paths:
@@ -717,6 +734,8 @@ async def generate_post(
                    "MP4 not produced — ffmpeg missing or failed (check it is installed and on PATH).")
     else:
         message = f"Assets generated inside working directory: {outputs['mp4']} and {outputs['pdf']}"
+        if audio_path and not outputs.get("audio"):
+            message += " Soundtrack could not be read — MP4 exported without audio."
 
     return {
         "status": "Success",

@@ -147,7 +147,7 @@ An example brand file (`brands/citiview.json`), showing every commonly overridde
     "tagline_1": "FULL EVENT PRODUCTION · LIGHTING · STAGING",
     "tagline_2": "SOUND · VIDEO · STREAMING",
     "contact_url": "CitiViewAV.com",
-    "contact_phone": "212-632-5196",
+    "contact_phone": "NY (212) 632-5196   CO (303) 414-2834",
     "brand_short": "CITIVIEW AV",
     "brand_full": "CITIVIEW AUDIO VISUAL",
     "default_output_base": "citiview_social_post",

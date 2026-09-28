@@ -13,7 +13,7 @@ spec and known open questions/bugs, and `docs/LOGIC_GUIDE.md` for the decision l
 
 ```bash
 ./run.sh                                        # one-command bootstrap + launch (venv, pip, npm, .env, doctor, :8000)
-make test                                       # bootstrap test deps + run the suite (108 tests; hermetic)
+make test                                       # bootstrap test deps + run the suite (115 tests; hermetic)
 make doctor                                     # report optional runtime deps (ffmpeg / node / agent SDK / token)
 make css                                        # regenerate static/tailwind.css after editing classes in app.py
 ```
@@ -129,7 +129,8 @@ beyond FastAPI for routing:
   - `POST /generate-post/` accepts `output_name` (required, non-blank), `files` (multipart), and
     either `sequence_json` + an aligned `upload_uids` list (reorder-safe, joined by **uid**, 400 on
     misalignment/duplicate/unknown uid) or the legacy `metadata_json` (index-aligned; length/shape
-    400-validated). It writes uploads under per-upload subdirs in `temp_uploads/` (so duplicate
+    400-validated), plus an optional `audio` file (MP3 soundtrack, passed to `render_post_package`
+    as `audio_path`; an unreadable track falls back to a silent MP4 and the message says so). It writes uploads under per-upload subdirs in `temp_uploads/` (so duplicate
     basenames don't collide), calls `compositor.render_post_package`, deletes the temp uploads, and
     returns the resulting `mp4`/`pdf` paths under `outputs/<base>/`.
 

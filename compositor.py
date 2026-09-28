@@ -51,6 +51,8 @@ HOLD_SECONDS = 4.0
 XFADE_SECONDS = 0.7
 FPS = 30
 CRF = 18
+AUDIO_FADE_SECONDS = 1.5   # fade-out on the optional soundtrack's last seconds
+AUDIO_BITRATE = "192k"
 
 
 # ---------------------------------------------------------------------------
@@ -412,15 +414,11 @@ def _build_endcard(bg_img, logo_full, footer, fonts):
         layer, _ = _render_line(tag, fonts["tag"], (205, 209, 215), tracking=3)
         base.alpha_composite(layer, (cx - w // 2, ty + i * 40))
     cy = ty + 120
-    uw = _text_w(CONTACT_URL, fonts["contact"], tracking=1)
-    pw = _text_w(CONTACT_PHONE, fonts["contact"], tracking=1)
-    dotw = 40
-    sx = cx - (uw + dotw + pw) // 2
-    layer, _ = _render_line(CONTACT_URL, fonts["contact"], PURE_WHITE, tracking=1)
-    base.alpha_composite(layer, (sx, cy))
-    d.ellipse([(sx + uw + 14, cy + 24), (sx + uw + 22, cy + 32)], fill=ACCENT_RED)
-    layer, _ = _render_line(CONTACT_PHONE, fonts["contact"], PURE_WHITE, tracking=1)
-    base.alpha_composite(layer, (sx + uw + dotw, cy))
+    # CHANGED: URL and phone line are stacked + centred (phone line may carry multiple numbers).
+    for i, line in enumerate((CONTACT_URL, CONTACT_PHONE)):
+        w = _text_w(line, fonts["contact"], tracking=1)
+        layer, _ = _render_line(line, fonts["contact"], PURE_WHITE, tracking=1)
+        base.alpha_composite(layer, (cx - w // 2, cy + i * 48))
     if footer:
         fw = _text_w(footer.upper(), fonts["foot"], tracking=6)
         layer, _ = _render_line(footer.upper(), fonts["foot"], (90, 94, 100), tracking=6)
@@ -436,8 +434,17 @@ def _build_pdf(frame_paths, out_path):
     images[0].save(out_path, "PDF", save_all=True, append_images=images[1:], resolution=300.0)
 
 
-def _build_mp4(frame_paths, out_path, hold=HOLD_SECONDS, xfade=XFADE_SECONDS, fps=FPS, crf=CRF):
-    """Returns True if the MP4 was produced, False otherwise (ffmpeg missing or failed)."""
+def _video_duration(n, hold=HOLD_SECONDS, xfade=XFADE_SECONDS):
+    """Total length of the xfade chain: every crossfade overlaps two holds."""
+    return round(n * hold - max(n - 1, 0) * xfade, 3)
+
+
+def _build_mp4(frame_paths, out_path, hold=HOLD_SECONDS, xfade=XFADE_SECONDS, fps=FPS, crf=CRF,
+               audio_path=None):
+    """Returns True if the MP4 was produced, False otherwise (ffmpeg missing or failed).
+
+    audio_path: optional soundtrack (any ffmpeg-readable audio, e.g. MP3). It is looped if shorter
+    than the video, trimmed to the video's exact length, and faded out over the last seconds."""
     if shutil.which("ffmpeg") is None:
         print("System Notice: ffmpeg not found on PATH; MP4 not produced.")
         return False
@@ -457,12 +464,20 @@ def _build_mp4(frame_paths, out_path, hold=HOLD_SECONDS, xfade=XFADE_SECONDS, fp
                          f"offset={round(offset, 3)}[{label}]")
             prev = label
         filter_complex = ";".join(parts)
+    audio_args = ["-an"]
+    if audio_path:
+        duration = _video_duration(n, hold, xfade)
+        fade = min(AUDIO_FADE_SECONDS, duration / 2)
+        # -stream_loop -1 repeats a short track; atrim cuts it to the video length exactly.
+        inputs += ["-stream_loop", "-1", "-i", audio_path]
+        filter_complex += (f";[{n}:a]atrim=0:{duration},asetpts=PTS-STARTPTS,"
+                           f"afade=t=out:st={round(duration - fade, 3)}:d={round(fade, 3)}[aout]")
+        audio_args = ["-map", "[aout]", "-c:a", "aac", "-b:a", AUDIO_BITRATE]
     cmd = ["ffmpeg", "-y", "-loglevel", "error"] + inputs + [
         "-filter_complex", filter_complex, "-map", "[vout]",
         "-c:v", "libx264", "-crf", str(crf),
-        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-r", str(fps), "-an",
-        out_path,
-    ]
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-r", str(fps),
+    ] + audio_args + [out_path]
     try:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     except FileNotFoundError:
@@ -478,14 +493,16 @@ def _build_mp4(frame_paths, out_path, hold=HOLD_SECONDS, xfade=XFADE_SECONDS, fp
 # Public entry point
 # ---------------------------------------------------------------------------
 def render_post_package(slides_dataset, output_base_name=None,
-                        stamp=None, footer=None, enable_fader=True):
+                        stamp=None, footer=None, enable_fader=True, audio_path=None):
     """Render a slide deck to outputs/<base>/<base>.pdf and .mp4.
 
     slides_dataset: list of {path, kicker, headline, sub} dicts (each may optionally carry
     a "grade" or "crop" override dict). `stamp` is an optional (line1, line2) top-right
     corner stamp; `footer` an optional end-card footer — both omitted when not provided.
-    Returns {"mp4", "pdf"} absolute paths ("mp4" is None when ffmpeg is missing or failed —
-    R9: never report a deliverable that was not written), or None if no slide image was usable.
+    `audio_path` is an optional soundtrack fitted to the video length (see _build_mp4).
+    Returns {"mp4", "pdf", "audio"} — absolute paths ("mp4" is None when ffmpeg is missing or
+    failed — R9: never report a deliverable that was not written) and "audio", True only when the
+    soundtrack made it into the MP4 — or None if no slide image was usable.
     """
     out_dir, pdf_path, mp4_path = build_output_paths(output_base_name)
     logo = load_logo()
@@ -533,8 +550,17 @@ def render_post_package(slides_dataset, output_base_name=None,
         frame_paths.append(efp)
 
         _build_pdf(frame_paths, pdf_path)
-        mp4_ok = _build_mp4(frame_paths, mp4_path)
+        audio_ok = False
+        if audio_path and os.path.exists(audio_path):
+            audio_ok = mp4_ok = _build_mp4(frame_paths, mp4_path, audio_path=audio_path)
+            if not mp4_ok:
+                # reason: a bad/undecodable audio file must not cost the operator the video —
+                # fall back to the silent MP4 and report the soundtrack as dropped.
+                print("System Notice: soundtrack could not be muxed; retrying MP4 without audio.")
+                mp4_ok = _build_mp4(frame_paths, mp4_path)
+        else:
+            mp4_ok = _build_mp4(frame_paths, mp4_path)
 
     # reason: R9 — the mp4 path was previously returned even when _build_mp4 bailed
     # (ffmpeg missing/failed), so clients received a path to a file that doesn't exist.
-    return {"mp4": mp4_path if mp4_ok else None, "pdf": pdf_path}
+    return {"mp4": mp4_path if mp4_ok else None, "pdf": pdf_path, "audio": audio_ok}
